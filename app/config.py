@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,33 @@ class Settings(BaseSettings):
     retrieval_top_k: int = Field(default=5, gt=0)
     # Minimum similarity (1 - cosine distance) a result needs to be returned.
     retrieval_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    # ---- Phase 3: LLM + RAG ----
+    # Validated when an LLM is actually needed (see app.llm.factory), so
+    # ingestion/indexing work without any LLM configuration.
+    llm_provider: Literal["anthropic", "openai_compatible", "fake"] = "anthropic"
+    llm_model: str | None = None  # required unless llm_provider is "fake"
+    llm_base_url: str | None = None  # openai_compatible only, e.g. http://localhost:11434/v1
+    anthropic_api_key: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
+    llm_max_output_tokens: int = Field(default=1024, gt=0)
+    # None = don't send a temperature (some reasoning models reject it).
+    llm_temperature: float | None = Field(default=0.1, ge=0.0, le=2.0)
+    llm_timeout_seconds: float = Field(default=60, gt=0)
+    rag_max_context_chars: int = Field(default=12000, gt=0)
+
+    @field_validator("llm_model", "llm_base_url", "anthropic_api_key", "openai_api_key", mode="before")
+    @classmethod
+    def _empty_is_none(cls, value: object) -> object:
+        """Treat ``VAR=`` in .env as unset."""
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("llm_temperature", mode="before")
+    @classmethod
+    def _temperature_none(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() in ("", "none", "null"):
+            return None
+        return value
 
     @model_validator(mode="after")
     def _check_overlap(self) -> "Settings":
