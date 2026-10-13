@@ -1,17 +1,28 @@
 [project]
 name = "ai-developer-assistant"
 version = "0.1.0"
-description = "AI developer assistant: RAG over your repositories (Phase 1: ingestion + chunking)."
+description = "AI developer assistant combining RAG and MCP for codebase understanding."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "chromadb>=1.5.9",
+    "pathspec>=1.1.1",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pymupdf>=1.24",
     "pyyaml>=6.0",
     "sentence-transformers>=6.1.0",
+    "torch>=2.6",
 ]
+
+# Install the CPU-only torch build (no CUDA libraries, a much smaller venv).
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
