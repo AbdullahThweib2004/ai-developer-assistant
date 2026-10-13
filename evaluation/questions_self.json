@@ -1,0 +1,40 @@
+[
+  {
+    "id": "s01",
+    "question": "How is a mismatched embedding model detected?",
+    "relevant_files": [
+      "app/retrieval/vector_store.py"
+    ],
+    "note": "Known hard case: vector-only search ranks embeddings.py above vector_store.py. Candidate for hybrid (keyword) search."
+  },
+  {
+    "id": "s02",
+    "question": "How does the chunker avoid infinite loops?",
+    "relevant_files": [
+      "app/ingestion/chunker.py"
+    ]
+  },
+  {
+    "id": "s03",
+    "question": "Which files are skipped because they look like secrets?",
+    "relevant_files": [
+      "app/ingestion/file_loader.py",
+      "app/config.py"
+    ]
+  },
+  {
+    "id": "s04",
+    "question": "How are PDF page numbers kept for each chunk?",
+    "relevant_files": [
+      "app/ingestion/document_parser.py",
+      "app/ingestion/chunker.py"
+    ]
+  },
+  {
+    "id": "s05",
+    "question": "How is cosine distance converted to a similarity score?",
+    "relevant_files": [
+      "app/retrieval/vector_store.py"
+    ]
+  }
+]
