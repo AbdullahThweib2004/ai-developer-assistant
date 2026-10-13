@@ -51,6 +51,7 @@ reason:
 | 1 | Resolved path is inside the root | `outside_root` |
 | 2 | File name *or symlink target name* matches a sensitive pattern (unless allow-listed) | `sensitive` |
 | 3 | Not ignored by the project's `.gitignore` files | `gitignored` |
+| 3b | Not ignored by the root `.assistantignore` | `assistantignored` |
 | 4 | Extension is supported (allow-listed names such as `.env.example` bypass this) | `unsupported_extension` |
 | 5 | It is a regular file and can be read | `unreadable` |
 | 6 | Size is within `MAX_FILE_SIZE_MB` | `too_large` |
@@ -72,7 +73,21 @@ git's rules:
   the walker never enters that directory.
 
 `.gitignore` files outside the project root, and `.git/info/exclude`, are not
-read. Sensitive-file detection runs first, so a `.env` is reported as
+read.
+
+`.assistantignore` (root only, same syntax) works the same way for directories and
+files, and lets a project hide files from the assistant without changing what git
+tracks.
+
+#### One set of rules for every access path
+
+`check_dir(path)` and `check_file(path)` hold all the rules. `discover()` applies
+`check_dir` while walking and `check_file` to each file. `check_path(path)` is the
+entry point for a single requested path (used by the MCP server). It normalizes
+`..` lexically, rejects anything outside the root, runs `check_dir` on every
+ancestor directory (including symlinked directories, which the walker never
+enters), and then runs `check_file`. A test asserts that `check_path` agrees with
+`discover` on every file of the fixture project. Sensitive-file detection runs first, so a `.env` is reported as
 `sensitive` even if it is also gitignored.
 
 Each skip is recorded as a `SkippedFile(path, reason, detail)` and logged at INFO
@@ -326,11 +341,11 @@ the prompt context:
    using the offsets, so the overlap appears only once. The merged span keeps the
    best score and all chunk ids.
 2. **Rank** spans by score, descending.
-3. **Budget.** Spans are added until the next one would exceed
-   `RAG_MAX_CONTEXT_CHARS`. That span and every lower-scored one are dropped
-   (recorded as `DroppedChunk(reason="context_budget")`). A span is never
-   truncated, and a lower-scored span can't jump ahead of a higher-scored one
-   that didn't fit.
+3. **Budget.** Spans are added best-first. A span that would exceed
+   `RAG_MAX_CONTEXT_CHARS` is skipped whole (recorded as
+   `DroppedChunk(reason="over_budget")`), and the remaining lower-scored spans
+   are still tried, so one oversized chunk can't crowd out smaller relevant
+   ones. A span is never truncated.
 4. **Number and wrap.** Each kept span becomes `S1`, `S2`, ... and is wrapped as
    `<source id="S1" file="auth.py" chars="0-1023" pages="2-3">...</source>`
    (`pages` for PDFs only).

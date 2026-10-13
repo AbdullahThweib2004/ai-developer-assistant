@@ -89,6 +89,10 @@ uv sync
 
 ### Configuration
 
+To keep files out of the assistant's index without touching git, add a
+`.assistantignore` at the project root (same syntax as `.gitignore`, e.g. `docs/drafts/`
+or `*.generated.py`). Matching files are skipped with the reason `assistantignored`.
+
 Settings are read from environment variables or a `.env` file. Start from the template:
 
 ```bash
@@ -283,6 +287,9 @@ hybrid search later:
 uv run python evaluation/evaluate_retrieval.py --path . --questions evaluation/questions_self.json
 ```
 
+Self-repo baseline (5 questions, 48 files, `evaluation/` excluded via `.assistantignore`):
+Precision@5 0.200, Recall@5 0.700, MRR 0.440. `s01` (the hard case) is still a miss.
+
 ### Evaluate answers
 
 ```bash
@@ -303,7 +310,8 @@ automatic checks:
 Results and a Markdown sheet for manual scoring (correctness and groundedness,
 1–5) are written to `evaluation/results/` (gitignored).
 
-**Baseline:** *not recorded yet. It will be added after the first run with a real provider.*
+**Baseline:** *pending: requires an LLM provider.* The commands to run are listed in
+[docs/pending_llm_checks.md](docs/pending_llm_checks.md).
 
 ## Project structure
 
@@ -360,6 +368,7 @@ ai-developer-assistant/
 - **Human approval for write actions.** Creating issues, comments or pull requests always needs explicit confirmation from the user.
 - **Retrieved content is untrusted.** Text from indexed files or GitHub is treated as data, never as instructions. Sources are wrapped in `<source>` tags, tag-like text inside them is escaped, and the system prompt tells the model to ignore instructions found in sources.
 - **Citations are verified.** Every `[Sx]` in an answer is checked against the sources actually sent, and unknown citations are reported.
+- **Respects `.assistantignore`.** An optional `.assistantignore` at the project root (same syntax as `.gitignore`) excludes files from the assistant only, without changing git. This repository uses it to keep `evaluation/` out of its own index.
 - **Respects `.gitignore`.** Files ignored by the repository's `.gitignore` files (root and nested, including `!` negations) are not indexed. Built-in exclusions still apply to repositories without a `.gitignore`.
 - **Path containment.** Every file path is resolved and must stay inside the project root, so `../` paths and symlinks pointing outside are rejected.
 
