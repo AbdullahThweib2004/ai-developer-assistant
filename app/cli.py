@@ -6,6 +6,7 @@ Usage:
     python -m app.cli search --path ./repo "how is auth done?" [--top-k 5] [--type py]
     python -m app.cli stats  --path ./repo
     python -m app.cli ask    --path ./repo "How does login work?" [--top-k 5] [--type py] [--show-sources]
+    python -m app.cli github repo|search|issue|prs|pr ... [--repo owner/name]   (read-only)
 """
 
 import argparse
@@ -15,6 +16,9 @@ from collections import Counter
 from pathlib import Path
 
 from app.config import Settings, get_settings
+from app.integrations.github_client import GitHubClient, resolve_repo
+from app.integrations.github_errors import GitHubError
+from app.integrations.github_models import RateLimitStatus
 from app.ingestion.models import Chunk
 from app.ingestion.pipeline import PipelineResult, run_pipeline
 from app.llm.base import LLMError
@@ -142,6 +146,82 @@ def cmd_ask(args: argparse.Namespace, settings: Settings) -> None:
     print(format_answer(answer, show_sources=args.show_sources))
 
 
+def format_rate_limit(rate: RateLimitStatus | None, authenticated: bool) -> str:
+    auth = "token" if authenticated else "no token"
+    if rate is None or rate.remaining is None:
+        return f"GitHub rate limit: unknown ({auth})"
+    reset = rate.reset_at.strftime("%H:%M:%S UTC") if rate.reset_at else "?"
+    return f"GitHub rate limit ({rate.resource or 'core'}): {rate.remaining}/{rate.limit} remaining, resets {reset} ({auth})"
+
+
+def _date(value: object) -> str:
+    return value.strftime("%Y-%m-%d") if hasattr(value, "strftime") else "-"
+
+
+def cmd_github(args: argparse.Namespace, settings: Settings) -> None:
+    """Read-only GitHub lookups; shares GitHubClient and resolve_repo with the MCP tools."""
+    repo = resolve_repo(settings, args.repo)
+    with GitHubClient(settings) as client:
+        try:
+            if args.github_command == "repo":
+                r = client.get_repository(repo)
+                print(f"{r.full_name}  ({r.visibility or '?'}, default branch {r.default_branch})")
+                print(f"  {r.description or '(no description)'}")
+                print(f"  stars {r.stars} · forks {r.forks} · open issues+PRs {r.open_issues_count} · "
+                      f"language {r.language or '-'} · license {r.license or '-'}")
+                print(f"  topics: {', '.join(r.topics) or '-'}")
+                print(f"  last push {_date(r.pushed_at)} · {r.html_url}")
+            elif args.github_command == "search":
+                res = client.search_issues(repo, args.text, state=args.state, kind=args.kind, limit=args.limit)
+                print(f"query: {res.query}")
+                print(f"{res.total_count} match(es){' (incomplete)' if res.incomplete_results else ''}, "
+                      f"showing {len(res.items)}:")
+                for i in res.items:
+                    kind = "PR   " if i.is_pull_request else "issue"
+                    labels = f" [{', '.join(i.labels)}]" if i.labels else ""
+                    print(f"  #{i.number:<6} {kind} {i.state:<6} {i.title}{labels}")
+                    print(f"           {i.comments} comments · updated {_date(i.updated_at)} · {i.html_url}")
+            elif args.github_command == "issue":
+                i = client.get_issue(repo, args.number)
+                kind = "Pull request" if i.is_pull_request else "Issue"
+                print(f"{kind} #{i.number}: {i.title}")
+                print(f"  {i.state}{f' ({i.state_reason})' if i.state_reason else ''} · by {i.author} · "
+                      f"opened {_date(i.created_at)} · labels: {', '.join(i.labels) or '-'}")
+                print(f"  {i.html_url}")
+                if i.note:
+                    print(f"  note: {i.note}")
+                print()
+                print(preview(i.body, 600) or "(no body)")
+                if i.body_truncated:
+                    print("  [body truncated]")
+                print(f"\nComments: {len(i.comments)} shown of {i.comments_count}")
+                for c in i.comments:
+                    print(f"  - {c.author} ({c.author_association}) {_date(c.created_at)}: {preview(c.body, 160)}")
+            elif args.github_command == "prs":
+                res = client.list_pull_requests(repo, state=args.state, limit=args.limit)
+                print(f"{len(res.items)} {args.state} pull request(s){' (more exist)' if res.truncated else ''}:")
+                for p in res.items:
+                    status = "merged" if p.merged_at else ("draft" if p.draft else p.state)
+                    print(f"  #{p.number:<6} {status:<7} {p.title}")
+                    print(f"           {p.head_branch} -> {p.base_branch} · by {p.author} · "
+                          f"updated {_date(p.updated_at)}")
+            elif args.github_command == "pr":
+                p = client.get_pull_request(repo, args.number)
+                status = "merged" if p.merged else ("draft" if p.draft else p.state)
+                print(f"PR #{p.number}: {p.title}")
+                print(f"  {status} · by {p.author} · {p.head_branch} -> {p.base_branch} · "
+                      f"{p.commits} commit(s), +{p.additions}/-{p.deletions}")
+                print(f"  {p.html_url}")
+                refs = ", ".join(f"{r.keyword} {r.repo}#{r.number}" for r in p.closing_references)
+                print(f"  closes: {refs or '-'}")
+                print(f"\nChanged files ({len(p.files)}{'+' if p.files_truncated else ''}):")
+                for f in p.files:
+                    renamed = f" (from {f.previous_filename})" if f.previous_filename else ""
+                    print(f"  {f.status:<9} +{f.additions:<5} -{f.deletions:<5} {f.filename}{renamed}")
+        finally:
+            print(f"\n{format_rate_limit(client.last_rate_limit, client.authenticated)}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -175,6 +255,30 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--type", action="append", help="Only this file type, e.g. py (repeatable)")
     ask.add_argument("--show-sources", action="store_true", help="Also print every retrieved chunk")
     ask.set_defaults(handler=cmd_ask)
+
+    github = sub.add_parser("github", help="Read-only GitHub lookups (repo, issues, pull requests)")
+    github_sub = github.add_subparsers(dest="github_command", required=True)
+
+    def add_github(name: str, help_text: str) -> argparse.ArgumentParser:
+        cmd = github_sub.add_parser(name, help=help_text)
+        cmd.add_argument("--repo", help="owner/name (default: GITHUB_DEFAULT_REPO); must be allowed")
+        cmd.add_argument("-v", "--verbose", action="store_true", help="Show INFO logs")
+        cmd.set_defaults(handler=cmd_github, path=None)
+        return cmd
+
+    add_github("repo", "Repository metadata")
+    search = add_github("search", "Search issues and pull requests")
+    search.add_argument("text", help="Search words, e.g. an error message")
+    search.add_argument("--state", choices=["open", "closed", "all"], default="all")
+    search.add_argument("--kind", choices=["issue", "pr", "any"], default="any")
+    search.add_argument("--limit", type=int, default=None)
+    issue = add_github("issue", "One issue with comments")
+    issue.add_argument("number", type=int)
+    prs = add_github("prs", "List pull requests")
+    prs.add_argument("--state", choices=["open", "closed", "all"], default="open")
+    prs.add_argument("--limit", type=int, default=None)
+    pr = add_github("pr", "One pull request with changed files")
+    pr.add_argument("number", type=int)
     return parser
 
 
@@ -188,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = get_settings(**overrides)
         args.handler(args, settings)
-    except (ValueError, NotADirectoryError, VectorStoreError, LLMError) as exc:
+    except (ValueError, NotADirectoryError, VectorStoreError, LLMError, GitHubError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0
