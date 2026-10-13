@@ -65,12 +65,26 @@ class Settings(BaseSettings):
     mcp_max_file_chars: int = Field(default=20000, gt=0)
     mcp_max_top_k: int = Field(default=10, gt=0, le=100)
 
+    # ---- Phase 5: GitHub (read-only) ----
+    github_token: SecretStr | None = None  # optional; raises rate limits, enables private repos
+    github_api_url: str = "https://api.github.com"
+    github_default_repo: str | None = None  # "owner/name"
+    github_allowed_repos: str = ""  # comma-separated "owner/name"; empty = only the default repo
+    github_timeout_seconds: float = Field(default=20, gt=0)
+    github_max_results: int = Field(default=20, gt=0, le=100)
+    github_max_pages: int = Field(default=3, gt=0, le=10)
+    github_max_body_chars: int = Field(default=4000, gt=0)
+    github_max_comments: int = Field(default=10, ge=0, le=100)
+
     @property
     def mcp_allowed_roots(self) -> list[Path]:
         """Parsed MCP_ALLOWED_PROJECT_ROOTS (not resolved or validated here)."""
         return [Path(p.strip()).expanduser() for p in self.mcp_allowed_project_roots.split(",") if p.strip()]
 
-    @field_validator("llm_model", "llm_base_url", "anthropic_api_key", "openai_api_key", mode="before")
+    @field_validator(
+        "llm_model", "llm_base_url", "anthropic_api_key", "openai_api_key", "github_token", "github_default_repo",
+        mode="before",
+    )
     @classmethod
     def _empty_is_none(cls, value: object) -> object:
         """Treat ``VAR=`` in .env as unset."""
