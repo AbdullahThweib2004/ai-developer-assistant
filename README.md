@@ -372,8 +372,21 @@ automatic checks:
 Results and a Markdown sheet for manual scoring (correctness and groundedness,
 1–5) are written to `evaluation/results/` (gitignored).
 
-**Baseline:** *pending: requires an LLM provider.* The commands to run are listed in
-[docs/pending_llm_checks.md](docs/pending_llm_checks.md).
+**Baseline:** model `anthropic/claude-haiku-5.5` via OpenRouter, prompt `rag-v1`,
+`all-MiniLM-L6-v2` embeddings, 12 questions (8 answerable, 4 unanswerable):
+
+| Check | Score |
+|---|---|
+| Cites an expected file (answerable) | 1.000 |
+| No invalid citations | 1.000 |
+| Mentions required terms (answerable) | 1.000 |
+| Insufficient-evidence flag correct (all 12) | 1.000 |
+| Questions passing every check | 12 / 12 |
+
+Total usage: about 17.8k input and 7.2k output tokens (≈ $0.005). Average latency was
+7.2 s per question. The fixture is small and the questions are simple, so treat this as a
+regression baseline. Manual correctness and groundedness scores come from the generated
+review sheet.
 
 ## Project structure
 
