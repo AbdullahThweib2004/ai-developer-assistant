@@ -196,7 +196,10 @@ def cmd_github(args: argparse.Namespace, settings: Settings) -> None:
                     print("  [body truncated]")
                 print(f"\nComments: {len(i.comments)} shown of {i.comments_count}")
                 for c in i.comments:
-                    print(f"  - {c.author} ({c.author_association}) {_date(c.created_at)}: {preview(c.body, 160)}")
+                    print(f"  {c.position:>3}. {c.author} ({c.author_association}) {_date(c.created_at)}: "
+                          f"{preview(c.body, 160)}")
+                    if i.omitted_comments and c.position == i.omitted_after_position:
+                        print(f"       ... {i.omitted_comments} comment(s) omitted ...")
             elif args.github_command == "prs":
                 res = client.list_pull_requests(repo, state=args.state, limit=args.limit)
                 print(f"{len(res.items)} {args.state} pull request(s){' (more exist)' if res.truncated else ''}:")

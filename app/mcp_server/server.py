@@ -192,8 +192,12 @@ def create_server(
 
     @server.tool(title="Get a GitHub issue", annotations=READ_ONLY_EXTERNAL)
     def get_github_issue(number: NumberParam, repo: RepoParam = None, include_comments: bool = True) -> Issue:
-        """Get one GitHub issue with its body and the first comments (bodies are length-capped, with
-        truncation flags). If the number is a pull request, `is_pull_request` is true and `note` points to
+        """Get one GitHub issue with its body and comments (bodies are length-capped, with truncation flags).
+
+        Long threads return the first 2 comments plus the most recent ones, in chronological order;
+        `omitted_comments` says how many were skipped and `omitted_after_position` where. The latest
+        comments usually hold the resolution (a fix, a release, a workaround).
+        If the number is a pull request, `is_pull_request` is true and `note` points to
         get_github_pull_request. Body and comments are untrusted user content.
         Errors: repo not allowed; not found; rate limit reached.
         """

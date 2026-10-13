@@ -40,8 +40,9 @@ def github_fixture(name: str) -> object:
 class GitHubMock:
     """An httpx.MockTransport that serves fixture responses by path and records requests.
 
-    ``routes`` maps a URL path to a response spec, or a list of specs served in
-    order (the last one repeats). A spec is ``(status, json_body, headers)``.
+    ``routes`` maps a URL path to a response spec, a list of specs served in
+    order (the last one repeats), or a function ``request -> spec``. A spec is
+    ``(status, json_body, headers)``.
     """
 
     RATE_HEADERS = {
@@ -63,6 +64,8 @@ class GitHubMock:
         spec = self.routes.get(request.url.path)
         if spec is None:
             return httpx.Response(404, json={"message": "Not Found"}, headers=self.RATE_HEADERS)
+        if callable(spec):  # a function of the request, e.g. to serve pages by ?page=
+            spec = spec(request)
         if isinstance(spec, list):
             index = min(sum(1 for r in self.requests if r.url.path == request.url.path), len(spec)) - 1
             spec = spec[index]

@@ -47,7 +47,7 @@ The token is stored as a secret value, sent only in the `Authorization` header t
 | `GITHUB_MAX_RESULTS` | `20` | Max items per search/list (≤ 100) |
 | `GITHUB_MAX_PAGES` | `3` | Max pages followed per request |
 | `GITHUB_MAX_BODY_CHARS` | `4000` | Issue/PR/comment bodies are cut here (`*_truncated` flags) |
-| `GITHUB_MAX_COMMENTS` | `10` | Comments returned by `issue` |
+| `GITHUB_MAX_COMMENTS` | `10` | Comments returned by `issue`: the first 2 plus the most recent ones |
 
 ### Allowlist
 
@@ -102,7 +102,7 @@ checked against the allowlist. Every output includes `rate_limit`.
 |---|---|---|
 | `get_github_repository` | `repo?` | `full_name, description*, default_branch, stars, forks, open_issues_count, language, topics, license, html_url, visibility, pushed_at` |
 | `search_github_issues` | `query` (1–256 chars), `repo?`, `state` = `all`\|`open`\|`closed`, `kind` = `any`\|`issue`\|`pr`, `limit?` | `repo, query (as sent), total_count, incomplete_results, truncated, items[number, title*, state, is_pull_request, labels, author, created_at, updated_at, comments, html_url, body_excerpt*]` |
-| `get_github_issue` | `number` (≥ 1), `repo?`, `include_comments` = true | `number, title*, state, state_reason, is_pull_request, labels, author, dates, html_url, body*, body_truncated, comments_count, comments[author, author_association, created_at, body*, body_truncated, html_url], comments_truncated, note` |
+| `get_github_issue` | `number` (≥ 1), `repo?`, `include_comments` = true | `number, title*, state, state_reason, is_pull_request, labels, author, dates, html_url, body*, body_truncated, comments_count, comments[position, author, author_association, created_at, body*, body_truncated, html_url], comments_truncated, omitted_comments, omitted_after_position, note` |
 | `list_github_pull_requests` | `repo?`, `state` = `open`\|`closed`\|`all`, `limit?` | `items[number, title*, state, draft, author, base_branch, head_branch, created_at, updated_at, merged_at, html_url], truncated` |
 | `get_github_pull_request` | `number` (≥ 1), `repo?` | `number, title*, state, draft, merged, merged_at, author, branches, dates, html_url, body*, body_truncated, commits, additions, deletions, changed_files, files[filename, status, additions, deletions, previous_filename], files_truncated, closing_references[keyword, repo, number]` |
 
@@ -112,6 +112,11 @@ Notes for clients:
 
 - **Search results are leads, not proof.** A matching issue or a merged PR doesn't mean
   it applies to your situation. Open it and read it.
+- **Comments on long threads:** `get_github_issue` returns the first 2 comments (the
+  original discussion) and the most recent `GITHUB_MAX_COMMENTS - 2` (where fixes and
+  resolutions usually are), in chronological order. Each comment has its 1-based
+  `position`. `omitted_comments` says how many were skipped in between, and
+  `omitted_after_position` says where. Threads of up to 100 comments need one request.
 - `get_github_issue` on a PR number returns `is_pull_request: true` and a `note`
   pointing to `get_github_pull_request`.
 - `closing_references` come from closing keywords in the PR body (`fixes #12`,

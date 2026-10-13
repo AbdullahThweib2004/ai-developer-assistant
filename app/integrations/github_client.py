@@ -64,6 +64,8 @@ RETRY_BACKOFF_SECONDS = 1.0
 EXCERPT_CHARS = 300
 MAX_PR_FILES = 300
 MAX_SEARCH_TEXT = 256  # GitHub rejects longer search text
+HEAD_COMMENTS = 2  # get_issue keeps the first comments (the original discussion) ...
+COMMENTS_PAGE_SIZE = 100  # ... plus the most recent ones (where resolutions usually are)
 
 State = Literal["open", "closed", "all"]
 Kind = Literal["issue", "pr", "any"]
@@ -199,6 +201,15 @@ def parse_closing_references(body: str, repo: RepoRef) -> list[IssueReference]:
             seen.add(key)
             refs.append(IssueReference(keyword=keyword.lower(), repo=target, number=number))
     return refs
+
+
+def _comment_gap(comments: list[Comment], total: int) -> tuple[int, int]:
+    """(number of omitted comments, position after which they were omitted)."""
+    omitted = max(total - len(comments), 0)
+    for before, after in zip(comments, comments[1:]):
+        if after.position - before.position > 1:
+            return omitted, before.position
+    return omitted, comments[-1].position if comments else 0
 
 
 def truncate(text: str | None, limit: int) -> tuple[str, bool]:
@@ -347,17 +358,9 @@ class GitHubClient:
         body, body_truncated = truncate(data.get("body"), self.settings.github_max_body_chars)
         comments_count = int(data.get("comments", 0))
         comments: list[Comment] = []
-        max_comments = self.settings.github_max_comments
-        if include_comments and comments_count and max_comments:
-            raw = self._get(
-                f"/repos/{repo.full_name}/issues/{number}/comments", {"per_page": min(max_comments, 100)}
-            ).json()
-            for c in raw[:max_comments]:
-                text, cut = truncate(c.get("body"), self.settings.github_max_body_chars)
-                comments.append(Comment(
-                    author=(c.get("user") or {}).get("login"), author_association=c.get("author_association"),
-                    created_at=c["created_at"], body=text, body_truncated=cut, html_url=c["html_url"],
-                ))
+        if include_comments and comments_count and self.settings.github_max_comments:
+            comments = self._issue_thread(repo, number, comments_count)
+        omitted, omitted_after = _comment_gap(comments, comments_count) if include_comments else (comments_count, 0)
         note = None
         if is_pr:
             note = (f"#{number} is a pull request. Use get_pull_request for its branches, "
@@ -369,9 +372,44 @@ class GitHubClient:
             author=(data.get("user") or {}).get("login"), created_at=data["created_at"],
             updated_at=data["updated_at"], closed_at=data.get("closed_at"), html_url=data["html_url"],
             body=body, body_truncated=body_truncated, comments_count=comments_count, comments=comments,
-            comments_truncated=comments_count > len(comments) if include_comments else comments_count > 0,
+            comments_truncated=omitted > 0, omitted_comments=omitted,
+            omitted_after_position=omitted_after if omitted else None,
             note=note, rate_limit=self.last_rate_limit,
         )
+
+    def _issue_thread(self, repo: RepoRef, number: int, total: int) -> list[Comment]:
+        """The first HEAD_COMMENTS comments plus the most recent ones, in chronological order.
+
+        Comments are ordered by ascending ID, so positions map to pages of 100.
+        Only the pages holding the wanted positions are fetched (one request
+        for threads of up to 100 comments).
+        """
+        limit = self.settings.github_max_comments
+        if total <= limit:
+            wanted = list(range(total))
+        else:
+            head = min(HEAD_COMMENTS, limit)
+            wanted = list(range(head)) + list(range(total - (limit - head), total))
+        by_position: dict[int, dict[str, Any]] = {}
+        for page in sorted({i // COMMENTS_PAGE_SIZE for i in wanted}):
+            raw = self._get(
+                f"/repos/{repo.full_name}/issues/{number}/comments",
+                {"per_page": COMMENTS_PAGE_SIZE, "page": page + 1},
+            ).json()
+            for offset, item in enumerate(raw):
+                by_position[page * COMMENTS_PAGE_SIZE + offset] = item
+        comments = []
+        for position in wanted:
+            c = by_position.get(position)
+            if c is None:  # the thread changed since the issue was fetched
+                continue
+            text, cut = truncate(c.get("body"), self.settings.github_max_body_chars)
+            comments.append(Comment(
+                position=position + 1, author=(c.get("user") or {}).get("login"),
+                author_association=c.get("author_association"), created_at=c["created_at"],
+                body=text, body_truncated=cut, html_url=c["html_url"],
+            ))
+        return comments
 
     def list_pull_requests(self, repo: RepoRef, state: State = "open", limit: int | None = None) -> PullRequestList:
         limit = self._limit(limit)

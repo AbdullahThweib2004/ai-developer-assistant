@@ -404,16 +404,86 @@ def test_get_repository_normalized(tmp_path: Path) -> None:
     assert repo.license == "MIT" and repo.topics == ["api", "demo"] and repo.visibility == "public"
 
 
-def test_get_issue_with_comments_and_truncation(tmp_path: Path) -> None:
+def comment_pages(total: int):  # type: ignore[no-untyped-def]
+    """A comments endpoint for a thread of ``total`` comments, served in pages."""
+
+    def serve(request: httpx.Request):  # type: ignore[no-untyped-def]
+        per_page = int(request.url.params.get("per_page", 30))
+        page = int(request.url.params.get("page", 1))
+        start = (page - 1) * per_page
+        items = [
+            {"id": i, "user": {"login": f"user{i}"}, "author_association": "NONE",
+             "created_at": f"2026-01-01T00:00:{i % 60:02d}Z", "html_url": f"https://github.com/c/{i}",
+             "body": f"comment number {i + 1}"}
+            for i in range(start, min(start + per_page, total))
+        ]
+        return 200, items, {}
+
+    return serve
+
+
+def issue_with(total: int) -> tuple[int, dict, dict]:
+    return 200, {**github_fixture("issue.json"), "comments": total}, {}
+
+
+def test_long_thread_keeps_first_two_and_latest_comments(tmp_path: Path) -> None:
+    routes = {f"{BASE}/issues/12": issue_with(250), f"{BASE}/issues/12/comments": comment_pages(250)}
+    gh, mock = client(tmp_path, routes, github_max_comments=10)
+    issue = gh.get_issue(REPO, 12)
+
+    assert [c.position for c in issue.comments] == [1, 2, 243, 244, 245, 246, 247, 248, 249, 250]
+    assert [c.body for c in issue.comments][:3] == ["comment number 1", "comment number 2", "comment number 243"]
+    assert issue.omitted_comments == 240 and issue.omitted_after_position == 2
+    assert issue.comments_truncated
+    pages = [r.url.params["page"] for r in mock.requests if r.url.path.endswith("/comments")]
+    assert pages == ["1", "3"]  # only the pages holding positions 1-2 and 243-250
+
+
+def test_tail_spanning_two_pages(tmp_path: Path) -> None:
+    routes = {f"{BASE}/issues/12": issue_with(205), f"{BASE}/issues/12/comments": comment_pages(205)}
+    gh, mock = client(tmp_path, routes, github_max_comments=10)
+    issue = gh.get_issue(REPO, 12)
+    assert [c.position for c in issue.comments] == [1, 2, 198, 199, 200, 201, 202, 203, 204, 205]
+    assert [r.url.params["page"] for r in mock.requests if r.url.path.endswith("/comments")] == ["1", "2", "3"]
+
+
+def test_medium_thread_needs_one_comments_request(tmp_path: Path) -> None:
+    routes = {f"{BASE}/issues/12": issue_with(40), f"{BASE}/issues/12/comments": comment_pages(40)}
+    gh, mock = client(tmp_path, routes, github_max_comments=6)
+    issue = gh.get_issue(REPO, 12)
+    assert [c.position for c in issue.comments] == [1, 2, 37, 38, 39, 40]
+    assert issue.omitted_comments == 34 and issue.omitted_after_position == 2
+    assert sum(r.url.path.endswith("/comments") for r in mock.requests) == 1
+
+
+def test_short_thread_returns_everything(tmp_path: Path) -> None:
+    routes = {f"{BASE}/issues/12": issue_with(5), f"{BASE}/issues/12/comments": comment_pages(5)}
+    gh, _ = client(tmp_path, routes, github_max_comments=10)
+    issue = gh.get_issue(REPO, 12)
+    assert [c.position for c in issue.comments] == [1, 2, 3, 4, 5]
+    assert issue.omitted_comments == 0 and issue.omitted_after_position is None and not issue.comments_truncated
+
+
+@pytest.mark.parametrize(("max_comments", "positions"), [(1, [1]), (2, [1, 2]), (3, [1, 2, 30])])
+def test_small_comment_limits(tmp_path: Path, max_comments: int, positions: list[int]) -> None:
+    routes = {f"{BASE}/issues/12": issue_with(30), f"{BASE}/issues/12/comments": comment_pages(30)}
+    gh, _ = client(tmp_path, routes, github_max_comments=max_comments)
+    issue = gh.get_issue(REPO, 12)
+    assert [c.position for c in issue.comments] == positions
+    assert issue.omitted_comments == 30 - len(positions)
+
+
+def test_get_issue_body_truncation_and_stale_comment_count(tmp_path: Path) -> None:
+    # The issue says 4 comments but the endpoint returns 3 (thread changed in between).
     routes = {f"{BASE}/issues/12": (200, github_fixture("issue.json"), {}),
               f"{BASE}/issues/12/comments": (200, github_fixture("issue_comments.json"), {})}
-    gh, mock = client(tmp_path, routes, github_max_body_chars=40, github_max_comments=2)
+    gh, _ = client(tmp_path, routes, github_max_body_chars=40)
     issue = gh.get_issue(REPO, 12)
     assert not issue.is_pull_request and issue.note is None
     assert issue.body_truncated and len(issue.body) <= 41
-    assert len(issue.comments) == 2 and issue.comments_truncated  # 4 comments exist
+    assert [c.position for c in issue.comments] == [1, 2, 3]
     assert issue.comments[0].author == "bob" and issue.comments[0].author_association == "MEMBER"
-    assert mock.requests[1].url.params["per_page"] == "2"
+    assert issue.omitted_comments == 1
 
 
 def test_get_issue_without_comments_makes_one_request(tmp_path: Path) -> None:

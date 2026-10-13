@@ -566,4 +566,8 @@ isn't the requested repo are dropped.
 `parse_closing_references` extracts issues the body claims to close (`close[sd]`,
 `fix(es|ed)`, `resolve[sd]` followed by `#N`, `owner/repo#N` or an issue URL),
 deduplicated. `get_issue` detects PRs through the `pull_request` key and points
-to `get_pull_request`.
+to `get_pull_request`. For comments it keeps the first 2 and the most recent
+`GITHUB_MAX_COMMENTS - 2`. Comments are ordered by ID, so the wanted positions
+map to pages of 100, and only those pages are fetched (one request for threads of
+up to 100 comments). Each comment carries its `position`, and the result reports
+`omitted_comments` and `omitted_after_position`.

@@ -63,6 +63,7 @@ class IssueSearchResult(BaseModel):
 
 
 class Comment(BaseModel):
+    position: int = Field(description="1-based position of the comment in the thread.")
     author: str | None = None
     author_association: str | None = None
     created_at: datetime
@@ -87,8 +88,15 @@ class Issue(BaseModel):
     body: str = ""
     body_truncated: bool = False
     comments_count: int
-    comments: list[Comment] = Field(default_factory=list)
-    comments_truncated: bool = Field(default=False, description="True if more comments exist than were returned.")
+    comments: list[Comment] = Field(
+        default_factory=list,
+        description="Chronological: the first 2 comments, then the most recent ones (see omitted_comments).",
+    )
+    comments_truncated: bool = Field(default=False, description="True if some comments were omitted.")
+    omitted_comments: int = Field(default=0, description="Comments left out between the first and the latest ones.")
+    omitted_after_position: int | None = Field(
+        default=None, description="The omitted comments come right after the comment at this position."
+    )
     note: str | None = None
     rate_limit: RateLimitStatus | None = None
 
