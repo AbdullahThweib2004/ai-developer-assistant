@@ -55,8 +55,8 @@ def text_of(result: CallToolResult) -> str:
 async def test_lists_tools_with_descriptions_schemas_and_read_only_annotations(mcp_settings: Settings) -> None:
     async with Client(create_server(mcp_settings, FakeEmbeddingProvider())) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
-    assert set(tools) == EXPECTED_TOOLS
-    for tool in tools.values():
+    assert EXPECTED_TOOLS <= set(tools)  # GitHub tools are covered in test_github_tools.py
+    for tool in (tools[name] for name in EXPECTED_TOOLS):
         assert tool.description and len(tool.description) > 30
         assert tool.output_schema is not None
         assert tool.annotations.read_only_hint is True

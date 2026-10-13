@@ -1,0 +1,11 @@
+[
+  {"id": 1, "user": {"login": "bob"}, "author_association": "MEMBER", "created_at": "2026-05-01T11:00:00Z",
+   "updated_at": "2026-05-01T11:00:00Z", "html_url": "https://github.com/octo-org/demo/issues/12#issuecomment-1",
+   "body": "Can you share the header you send?"},
+  {"id": 2, "user": {"login": "alice"}, "author_association": "NONE", "created_at": "2026-05-01T12:00:00Z",
+   "updated_at": "2026-05-01T12:00:00Z", "html_url": "https://github.com/octo-org/demo/issues/12#issuecomment-2",
+   "body": "Authorization: Bearer <redacted>"},
+  {"id": 3, "user": {"login": "bob"}, "author_association": "MEMBER", "created_at": "2026-05-02T09:00:00Z",
+   "updated_at": "2026-05-02T09:00:00Z", "html_url": "https://github.com/octo-org/demo/issues/12#issuecomment-3",
+   "body": "Found it: the prefix check is case-sensitive. PR incoming."}
+]

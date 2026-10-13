@@ -24,3 +24,49 @@ def make_pdf(path: Path, pages: list[str]) -> None:
         for text in pages:
             pdf.new_page().insert_text((72, 72), text)
         pdf.save(path)
+
+
+# ---- GitHub mocks ----------------------------------------------------------------
+
+GITHUB_FIXTURES = Path(__file__).parent / "fixtures" / "github"
+
+
+def github_fixture(name: str) -> object:
+    import json
+
+    return json.loads((GITHUB_FIXTURES / name).read_text())
+
+
+class GitHubMock:
+    """An httpx.MockTransport that serves fixture responses by path and records requests.
+
+    ``routes`` maps a URL path to a response spec, or a list of specs served in
+    order (the last one repeats). A spec is ``(status, json_body, headers)``.
+    """
+
+    RATE_HEADERS = {
+        "x-ratelimit-limit": "60", "x-ratelimit-remaining": "57", "x-ratelimit-used": "3",
+        "x-ratelimit-reset": "1791000000", "x-ratelimit-resource": "core",
+    }
+
+    def __init__(self, routes: dict[str, object]) -> None:
+        import httpx
+
+        self.routes = routes
+        self.requests: list[httpx.Request] = []
+        self.transport = httpx.MockTransport(self._handle)
+
+    def _handle(self, request):  # type: ignore[no-untyped-def]
+        import httpx
+
+        self.requests.append(request)
+        spec = self.routes.get(request.url.path)
+        if spec is None:
+            return httpx.Response(404, json={"message": "Not Found"}, headers=self.RATE_HEADERS)
+        if isinstance(spec, list):
+            index = min(sum(1 for r in self.requests if r.url.path == request.url.path), len(spec)) - 1
+            spec = spec[index]
+        if isinstance(spec, Exception):
+            raise spec
+        status, body, headers = spec
+        return httpx.Response(status, json=body, headers={**self.RATE_HEADERS, **(headers or {})})

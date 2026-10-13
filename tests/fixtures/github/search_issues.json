@@ -1,0 +1,22 @@
+{
+  "total_count": 3, "incomplete_results": false,
+  "items": [
+    {"number": 12, "title": "401 Unauthorized with bearer token", "state": "closed",
+     "repository_url": "https://api.github.com/repos/octo-org/demo",
+     "html_url": "https://github.com/octo-org/demo/issues/12", "user": {"login": "alice"},
+     "labels": [{"name": "bug"}, {"name": "auth"}], "comments": 4,
+     "created_at": "2026-05-01T10:00:00Z", "updated_at": "2026-05-03T10:00:00Z",
+     "body": "When I send a bearer token the API returns 401.\n\nSteps: ..."},
+    {"number": 15, "title": "Fix token parsing", "state": "closed",
+     "repository_url": "https://api.github.com/repos/octo-org/demo",
+     "html_url": "https://github.com/octo-org/demo/pull/15", "user": {"login": "bob"},
+     "labels": [], "comments": 1, "created_at": "2026-05-04T10:00:00Z", "updated_at": "2026-05-05T10:00:00Z",
+     "body": "Fixes #12", "pull_request": {"url": "https://api.github.com/repos/octo-org/demo/pulls/15",
+     "html_url": "https://github.com/octo-org/demo/pull/15", "merged_at": "2026-05-05T10:00:00Z"}},
+    {"number": 99, "title": "Unrelated result from another repository", "state": "open",
+     "repository_url": "https://api.github.com/repos/someone-else/other",
+     "html_url": "https://github.com/someone-else/other/issues/99", "user": {"login": "mallory"},
+     "labels": [], "comments": 0, "created_at": "2026-05-06T10:00:00Z", "updated_at": "2026-05-06T10:00:00Z",
+     "body": "should be filtered out"}
+  ]
+}

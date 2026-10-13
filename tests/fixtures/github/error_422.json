@@ -1,0 +1,1 @@
+{"message": "Validation Failed", "errors": [{"message": "The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them."}], "documentation_url": "https://docs.github.com/rest/search/search#search-issues-and-pull-requests", "status": "422"}
