@@ -59,6 +59,17 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=60, gt=0)
     rag_max_context_chars: int = Field(default=12000, gt=0)
 
+    # ---- Phase 4: MCP server ----
+    # Comma-separated absolute paths; MCP tools only work on projects inside them.
+    mcp_allowed_project_roots: str = ""
+    mcp_max_file_chars: int = Field(default=20000, gt=0)
+    mcp_max_top_k: int = Field(default=10, gt=0, le=100)
+
+    @property
+    def mcp_allowed_roots(self) -> list[Path]:
+        """Parsed MCP_ALLOWED_PROJECT_ROOTS (not resolved or validated here)."""
+        return [Path(p.strip()).expanduser() for p in self.mcp_allowed_project_roots.split(",") if p.strip()]
+
     @field_validator("llm_model", "llm_base_url", "anthropic_api_key", "openai_api_key", mode="before")
     @classmethod
     def _empty_is_none(cls, value: object) -> object:

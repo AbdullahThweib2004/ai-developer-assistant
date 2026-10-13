@@ -28,7 +28,7 @@ def parse_document(path: Path, root: Path, project_name: str) -> Document:
     """Parse a single file located inside ``root``."""
     rel_path = path.relative_to(root).as_posix()
     suffix = path.suffix.lower()
-    file_type = _file_type(path)
+    file_type = file_type_for(path)
     metadata: dict[str, Any] = {}
 
     try:
@@ -121,7 +121,7 @@ def _validate_syntax(content: str, metadata: dict[str, Any], loader: Any) -> Non
         metadata["syntax_error"] = str(exc).splitlines()[0][:200]
 
 
-def _file_type(path: Path) -> str:
+def file_type_for(path: Path) -> str:
     """Extension without the dot; env templates like ``.env.example`` are "env"."""
     if path.name.lower().startswith(".env"):
         return "env"
