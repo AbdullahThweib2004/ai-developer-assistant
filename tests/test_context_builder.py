@@ -25,23 +25,33 @@ def test_sources_are_numbered_by_score_and_delimited() -> None:
     assert built.text.count("<source ") == built.text.count("</source>") == 2
 
 
-def test_budget_drops_lowest_scored_first_and_never_truncates() -> None:
+def test_budget_keeps_best_sources_and_never_truncates() -> None:
     chunks = [chunk(f"c{i}", f"f{i}.py", 0, "x" * 300, score) for i, score in enumerate([0.9, 0.5, 0.7, 0.1])]
     one_block = len(format_source(build_context(chunks[:1], 10_000).sources["S1"]))
     built = build_context(chunks, max_chars=one_block * 2 + 2)  # room for exactly two blocks
 
     assert [s.file_path for s in built.sources.values()] == ["f0.py", "f2.py"]  # scores 0.9, 0.7
-    assert [(d.chunk_id, d.reason) for d in built.dropped] == [("c1", "context_budget"), ("c3", "context_budget")]
+    assert [(d.chunk_id, d.reason) for d in built.dropped] == [("c1", "over_budget"), ("c3", "over_budget")]
     assert len(built.text) <= one_block * 2 + 2
     assert all(len(s.content) == 300 for s in built.sources.values())  # nothing cut mid-way
 
 
-def test_budget_drop_is_strictly_by_score() -> None:
-    # A big high-scored chunk that doesn't fit stops lower-scored small ones from jumping ahead.
-    chunks = [chunk("big", "big.py", 0, "x" * 500, 0.9), chunk("small", "small.py", 0, "y", 0.1)]
-    built = build_context(chunks, max_chars=200)
-    assert built.sources == {}
-    assert [d.chunk_id for d in built.dropped] == ["big", "small"]
+def test_oversized_source_is_skipped_and_smaller_ones_still_fit() -> None:
+    chunks = [
+        chunk("big", "big.py", 0, "x" * 500, 0.9),
+        chunk("mid", "mid.py", 0, "y" * 50, 0.6),
+        chunk("small", "small.py", 0, "z", 0.1),
+    ]
+    built = build_context(chunks, max_chars=250)
+    assert [s.file_path for s in built.sources.values()] == ["mid.py", "small.py"]
+    assert list(built.sources) == ["S1", "S2"]  # numbering has no gaps
+    assert [(d.chunk_id, d.reason) for d in built.dropped] == [("big", "over_budget")]
+
+
+def test_nothing_fits_drops_everything() -> None:
+    built = build_context([chunk("big", "big.py", 0, "x" * 500, 0.9)], max_chars=100)
+    assert built.sources == {} and built.text == ""
+    assert [d.reason for d in built.dropped] == ["over_budget"]
 
 
 def test_overlapping_chunks_from_same_file_are_merged() -> None:

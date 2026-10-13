@@ -1,9 +1,9 @@
 """Turn retrieved chunks into a numbered, delimited context for the LLM.
 
 Steps: merge overlapping chunks from the same file -> order by score ->
-keep the best sources that fit the character budget (dropping the lowest
-scored first, never truncating a chunk) -> number them S1, S2, ... and wrap
-each one in ``<source>`` tags.
+add sources best-first while they fit the character budget (a source that
+doesn't fit is skipped whole, never truncated, and smaller lower-scored ones
+are still tried) -> number them S1, S2, ... and wrap each one in ``<source>`` tags.
 """
 
 import html
@@ -77,17 +77,15 @@ def build_context(chunks: list[RetrievedChunk], max_chars: int) -> BuiltContext:
     sources: dict[str, SourceRef] = {}
     dropped: list[DroppedChunk] = []
     used = 0
-    budget_exhausted = False
     for span in spans:
         source_id = f"S{len(sources) + 1}"
         ref = _to_ref(source_id, span)
         block = format_source(ref)
         cost = len(block) + (2 if blocks else 0)  # blank line between blocks
-        if budget_exhausted or used + cost > max_chars:
-            # Drop this and every lower-scored span, never cutting one in half.
-            budget_exhausted = True
+        if used + cost > max_chars:
+            # Skip this span whole (never cut in half); smaller ones may still fit.
             dropped.extend(
-                DroppedChunk(chunk_id=cid, file_path=span.file_path, score=span.score, reason="context_budget")
+                DroppedChunk(chunk_id=cid, file_path=span.file_path, score=span.score, reason="over_budget")
                 for cid in span.chunk_ids
             )
             continue
