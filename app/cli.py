@@ -5,6 +5,7 @@ Usage:
     python -m app.cli index  --path ./repo [--rebuild]
     python -m app.cli search --path ./repo "how is auth done?" [--top-k 5] [--type py]
     python -m app.cli stats  --path ./repo
+    python -m app.cli ask    --path ./repo "How does login work?" [--top-k 5] [--type py] [--show-sources]
 """
 
 import argparse
@@ -16,7 +17,9 @@ from pathlib import Path
 from app.config import Settings, get_settings
 from app.ingestion.models import Chunk
 from app.ingestion.pipeline import PipelineResult, run_pipeline
-from app.retrieval.indexer import IndexReport, build_index, open_store
+from app.llm.base import LLMError
+from app.rag.answer_generator import Answer, AnswerGenerator
+from app.retrieval.indexer import IndexReport, build_index, index_stats
 from app.retrieval.retriever import RetrievedChunk, Retriever
 from app.retrieval.vector_store import VectorStoreError
 
@@ -54,16 +57,44 @@ def format_index_report(report: IndexReport) -> str:
     return "\n".join(lines)
 
 
+def preview(text: str, limit: int = PREVIEW_CHARS) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[:limit].rstrip() + "..."
+
+
 def format_results(results: list[RetrievedChunk]) -> str:
     if not results:
         return "No results."
     blocks = []
     for rank, r in enumerate(results, start=1):
-        preview = " ".join(r.content.split())
-        if len(preview) > PREVIEW_CHARS:
-            preview = preview[:PREVIEW_CHARS].rstrip() + "..."
-        blocks.append(f"{rank}. [{r.score:.3f}] {r.file_path} (chunk {r.chunk_index})\n   {preview}")
+        blocks.append(f"{rank}. [{r.score:.3f}] {r.file_path} (chunk {r.chunk_index})\n   {preview(r.content)}")
     return "\n\n".join(blocks)
+
+
+def format_answer(answer: Answer, show_sources: bool = False) -> str:
+    lines = [answer.answer_text, ""]
+    if answer.insufficient_evidence:
+        lines.append("! Insufficient evidence: the project sources don't fully answer this question.")
+    for suggestion in answer.suggestions:
+        lines.append(f"  - {suggestion}")
+    if answer.invalid_citations:
+        lines.append(f"! Invalid citations (not among the provided sources): {', '.join(answer.invalid_citations)}")
+    lines.append("")
+    lines.append("Cited sources:" if answer.cited_sources else "Cited sources: none")
+    for src in answer.cited_sources:
+        lines.append(f"  [{src.source_id}] {src.file_path} ({src.location}, score {src.score:.3f})")
+    if answer.dropped_sources:
+        lines.append(f"Dropped for context budget: {len(answer.dropped_sources)} chunk(s)")
+    if show_sources:
+        lines.append("")
+        lines.append("Retrieved chunks:")
+        lines.append(format_results(answer.all_retrieved_sources))
+    lines.append("")
+    tokens = f"{answer.input_tokens} in / {answer.output_tokens} out" if answer.model else "no LLM call"
+    lines.append(f"Model: {answer.model or '-'} ({answer.provider or '-'}) | tokens: {tokens} | prompt: {answer.prompt_version}")
+    lat = answer.latency
+    lines.append(f"Latency: retrieval {lat.retrieval_ms:.0f} ms, LLM {lat.llm_ms:.0f} ms, total {lat.total_ms:.0f} ms")
+    return "\n".join(lines)
 
 
 def write_jsonl(chunks: list[Chunk], output: Path) -> None:
@@ -95,15 +126,20 @@ def cmd_search(args: argparse.Namespace, settings: Settings) -> None:
 
 
 def cmd_stats(args: argparse.Namespace, settings: Settings) -> None:
-    # Inspect only: report whichever model the index was built with.
-    store = open_store(settings, settings.project_root, model_name=None)
-    files = store.list_indexed_files()
-    print(f"Collection:       {store.name}")
-    print(f"Chunks:           {store.count()}")
-    print(f"Embedding model:  {store.stored_model()}")
-    print(f"Files indexed:    {len(files)}")
-    for path in files:
+    stats = index_stats(settings, settings.project_root)
+    print(f"Collection:       {stats.collection_name}")
+    print(f"Chunks:           {stats.chunk_count}")
+    print(f"Embedding model:  {stats.model_name}")
+    print(f"Files indexed:    {len(stats.files)}")
+    for path in stats.files:
         print(f"  - {path}")
+
+
+def cmd_ask(args: argparse.Namespace, settings: Settings) -> None:
+    answer = AnswerGenerator(settings).answer(
+        args.question, settings.project_root, top_k=args.top_k, file_types=args.type
+    )
+    print(format_answer(answer, show_sources=args.show_sources))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,6 +168,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     stats = add_command("stats", "Show what is indexed for a repository")
     stats.set_defaults(handler=cmd_stats)
+
+    ask = add_command("ask", "Answer a question about an indexed repository, with citations")
+    ask.add_argument("question", help="Your question")
+    ask.add_argument("--top-k", type=int, default=None, help="Chunks to retrieve (default: RETRIEVAL_TOP_K)")
+    ask.add_argument("--type", action="append", help="Only this file type, e.g. py (repeatable)")
+    ask.add_argument("--show-sources", action="store_true", help="Also print every retrieved chunk")
+    ask.set_defaults(handler=cmd_ask)
     return parser
 
 
@@ -145,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = get_settings(**overrides)
         args.handler(args, settings)
-    except (ValueError, NotADirectoryError, VectorStoreError) as exc:
+    except (ValueError, NotADirectoryError, VectorStoreError, LLMError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0
