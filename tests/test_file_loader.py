@@ -6,7 +6,7 @@ import pytest
 
 from app.ingestion.file_loader import FileLoader
 from app.ingestion.models import SkipReason
-from tests.helpers import make_settings
+from tests.helpers import FIXTURE_FILES, make_settings
 
 
 def discover(root: Path, **overrides: object):
@@ -19,7 +19,7 @@ def discover(root: Path, **overrides: object):
 
 def test_accepts_supported_files(project: Path) -> None:
     accepted, _ = discover(project)
-    assert accepted == {"README.md", "main.py", "config.yaml", "data.json", ".env.example"}
+    assert accepted == FIXTURE_FILES
 
 
 def test_skips_excluded_dirs_without_descending(project: Path) -> None:

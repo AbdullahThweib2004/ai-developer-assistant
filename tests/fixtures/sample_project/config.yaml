@@ -4,3 +4,13 @@ app:
 features:
   - search
   - chat
+database:
+  host: localhost
+  port: 5432
+  name: sample_db
+  user: sample_user
+  pool_size: 10
+  connect_timeout_seconds: 5
+logging:
+  level: INFO
+  format: json

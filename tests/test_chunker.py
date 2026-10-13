@@ -9,7 +9,7 @@ import pytest
 from app.ingestion.chunker import CharacterChunker, make_chunk_id
 from app.ingestion.models import Document, SkipReason
 from app.ingestion.pipeline import run_pipeline
-from tests.helpers import make_pdf, make_settings
+from tests.helpers import FIXTURE_FILES, make_pdf, make_settings
 
 
 def make_doc(content: str, file_path: str = "notes.txt", **metadata: object) -> Document:
@@ -135,6 +135,6 @@ def test_pipeline_survives_corrupted_pdf(project: Path) -> None:
     skipped = {s.path: s.reason for s in result.skipped}
     assert skipped["broken.pdf"] == SkipReason.PARSE_ERROR  # not BINARY
     parsed = {d.file_path for d in result.documents}
-    assert parsed == {"README.md", "main.py", "config.yaml", "data.json", ".env.example", "good.pdf"}
+    assert parsed == FIXTURE_FILES | {"good.pdf"}
     assert {c.file_path for c in result.chunks} == parsed
-    assert result.files_found == 7  # broken.pdf was found, then failed to parse
+    assert result.files_found == len(FIXTURE_FILES) + 2  # broken.pdf was found, then failed to parse

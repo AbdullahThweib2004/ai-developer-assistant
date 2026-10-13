@@ -6,6 +6,12 @@ import pymupdf
 
 from app.config import Settings
 
+# Files in tests/fixtures/sample_project that ingestion should accept.
+FIXTURE_FILES = {
+    "README.md", "main.py", "auth.py", "database.py", "config.yaml", "data.json",
+    "docs/troubleshooting.md", ".env.example",
+}
+
 
 def make_settings(root: Path, **overrides: object) -> Settings:
     """Settings for tests: ignore any real .env file in the working directory."""
