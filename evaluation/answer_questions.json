@@ -1,0 +1,14 @@
+[
+  {"id": "a01", "question": "How does verify_user_credentials check a password?", "expected_files": ["auth.py"], "must_mention": ["compare_digest"]},
+  {"id": "a02", "question": "What database host and port does the project use?", "expected_files": ["config.yaml"], "must_mention": ["localhost", "5432"]},
+  {"id": "a03", "question": "What happens when the app cannot connect to the database?", "expected_files": ["database.py", "docs/troubleshooting.md"], "must_mention": ["DatabaseConnectionError"]},
+  {"id": "a04", "question": "How are session tokens created after a successful login?", "expected_files": ["auth.py"], "must_mention": ["token_urlsafe"]},
+  {"id": "a05", "question": "What are the setup steps for this project?", "expected_files": ["README.md"], "must_mention": ["requirements.txt", ".env"]},
+  {"id": "a06", "question": "How many PBKDF2 iterations are used to hash passwords?", "expected_files": ["auth.py"], "must_mention": ["200"]},
+  {"id": "a07", "question": "Why might every login fail after the password hashing configuration changes?", "expected_files": ["docs/troubleshooting.md", "auth.py"], "must_mention": ["iteration"]},
+  {"id": "a08", "question": "What is the database connection pool size?", "expected_files": ["config.yaml"], "must_mention": ["10"]},
+  {"id": "u01", "question": "Which cloud provider is the project deployed to?", "expect_insufficient": true},
+  {"id": "u02", "question": "How does the project rate-limit incoming API requests?", "expect_insufficient": true},
+  {"id": "u03", "question": "What TTL is configured for the Redis session cache?", "expect_insufficient": true},
+  {"id": "u04", "question": "Which frontend framework does the web UI use?", "expect_insufficient": true}
+]
