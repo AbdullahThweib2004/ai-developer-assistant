@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets (keep the example file)
+.env
+.env.*
+!.env.example
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Vector store data (later phases)
+chroma_db/
+chroma_data/
+
+# Generated output
+*.jsonl
+evaluation/results/
+
+# Editors
+.idea/
+.vscode/
+
+# Keep the test fixture's fake virtualenv under version control (it is not a real venv)
+!tests/fixtures/sample_project/.venv/

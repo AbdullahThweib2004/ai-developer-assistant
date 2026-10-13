@@ -1,0 +1,26 @@
+[project]
+name = "ai-developer-assistant"
+version = "0.1.0"
+description = "AI developer assistant: RAG over your repositories (Phase 1: ingestion + chunking)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pymupdf>=1.24",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
