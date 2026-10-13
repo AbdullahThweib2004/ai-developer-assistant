@@ -6,9 +6,10 @@ repository's code and documentation, answers questions using the retrieved code 
 cited context, and helps investigate errors. Through an MCP server it works with GitHub
 issues and pull requests, and any write action needs explicit human approval.
 
-> **Status:** Phases 1–3 are complete. You can index a repository and ask questions
-> about it from the CLI or a Streamlit UI. Answers cite their sources and say clearly
-> when the project doesn't contain the answer. Phase 4 (MCP server) is next.
+> **Status:** Phases 1–4 are complete. You can index a repository and ask cited
+> questions from the CLI or a Streamlit UI, and any MCP client (Claude Desktop, Cursor,
+> MCP Inspector) can search and read indexed projects through a read-only MCP server.
+> Phase 5 (GitHub integration) is next.
 
 ## Key features (planned)
 
@@ -25,8 +26,8 @@ issues and pull requests, and any write action needs explicit human approval.
 | 1 | Ingestion & chunking | ✅ Done |
 | 2 | Embeddings & vector search | ✅ Done |
 | 3 | RAG question answering | ✅ Done |
-| 4 | MCP server | ⏭️ Next |
-| 5 | GitHub integration | Planned |
+| 4 | MCP server | ✅ Done |
+| 5 | GitHub integration | ⏭️ Next |
 | 6 | RAG + MCP orchestration | Planned |
 | 7 | Human-approved issue creation | Planned |
 | 8 | Evaluation, security & documentation | Planned |
@@ -36,23 +37,29 @@ issues and pull requests, and any write action needs explicit human approval.
 A repository goes through an ingestion pipeline that discovers safe files, parses them
 and splits them into chunks. The chunks are embedded and stored in Chroma. At question
 time the retriever finds the most relevant chunks, and the LLM answers using only that
-context. An orchestration layer decides when to use retrieval and when to call GitHub
-tools, which are exposed by an MCP server.
+context, with citations. The same retrieval and file-access code is exposed to external
+MCP clients through a read-only MCP server. One shared set of file rules
+(`FileLoader.check_path`) decides what both ingestion and the MCP server may read.
+Later phases add GitHub tools and an orchestration layer.
 
 ```mermaid
 flowchart LR
-    repo[(Repository)] --> ingest[Ingestion<br/>loader + parser]
+    repo[(Repository)] --> rules{{Shared file rules<br/>check_path}}
+    rules --> ingest[Ingestion<br/>loader + parser]
     ingest --> chunk[Chunking]
     chunk --> embed[Embeddings]
     embed --> chroma[(Chroma)]
     chroma --> retriever[Retriever]
-    retriever --> llm[LLM]
+    retriever --> rag[RAG answer generator]
+    rag --> llm[LLM]
+    rag --> ui[CLI / Streamlit]
 
-    user([Developer]) --> orch[Orchestration]
-    orch --> retriever
-    llm --> orch
-    orch <--> mcp[MCP server]
-    mcp <--> gh[GitHub API]
+    client([MCP client<br/>Claude Desktop, Cursor, Inspector]) <-->|stdio| mcp[MCP server<br/>read-only tools]
+    mcp --> retriever
+    mcp --> rules
+
+    orch[Orchestration<br/>planned] -.-> mcp
+    mcp -.->|Phase 5| gh[GitHub API]
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the detailed design.
@@ -69,7 +76,7 @@ See [docs/architecture.md](docs/architecture.md) for the detailed design.
 - **Streamlit**: web UI
 - **pathspec**: `.gitignore` matching
 - **pytest**: tests
-- Planned: the **MCP** Python SDK
+- **MCP Python SDK** (`mcp`): MCP server and test client
 
 ## Getting started
 
@@ -123,6 +130,9 @@ cp .env.example .env
 | `LLM_TEMPERATURE` | `0.1` | `none` omits it (always omitted for Anthropic) |
 | `LLM_TIMEOUT_SECONDS` | `60` | Per-request timeout |
 | `RAG_MAX_CONTEXT_CHARS` | `12000` | Max characters of sources sent to the LLM |
+| `MCP_ALLOWED_PROJECT_ROOTS` | *(empty)* | Comma-separated absolute paths the MCP server may read; empty = server won't start |
+| `MCP_MAX_FILE_CHARS` | `20000` | Max characters returned by `read_project_file` |
+| `MCP_MAX_TOP_K` | `10` | Max `top_k` for the MCP `search_project` tool |
 
 ### LLM provider setup
 
@@ -248,6 +258,26 @@ It only listens on `localhost` (see `.streamlit/config.toml`).
 > `docs/images/ui-answer.png`: an answer with cited sources
 > `docs/images/ui-insufficient.png`: an insufficient-evidence answer
 
+### MCP server
+
+The read-only project tools are also available to any MCP client over stdio:
+`ping`, `get_index_stats`, `search_project`, `read_project_file` and
+`list_project_files`.
+
+```bash
+uv run python -m app.cli index --path /absolute/path/to/project --rebuild
+MCP_ALLOWED_PROJECT_ROOTS=/absolute/path/to/projects uv run python -m app.mcp_server
+
+# Smoke test: lists tools, calls ping and search_project on this repository
+uv run python scripts/mcp_smoke_test.py
+```
+
+The server only works on projects inside `MCP_ALLOWED_PROJECT_ROOTS`. It applies the
+same file rules as ingestion (no secrets, ignored files, binaries or paths outside
+the project), wraps all returned file text as untrusted content, and never writes,
+executes code or calls an LLM. See **[docs/mcp.md](docs/mcp.md)** for tool schemas,
+the security model, and setup for MCP Inspector, Claude Desktop and Cursor.
+
 ### Run the tests
 
 ```bash
@@ -341,8 +371,16 @@ ai-developer-assistant/
 │   │   ├── prompts.py          # system prompt (versioned)
 │   │   ├── context_builder.py  # dedup, budget, numbered <source> blocks
 │   │   └── answer_generator.py # retrieve -> context -> LLM -> validate citations
-│   └── ui/
-│       └── streamlit_app.py
+│   ├── ui/
+│   │   └── streamlit_app.py
+│   └── mcp_server/
+│       ├── server.py           # MCPServer + tool registration (stdio)
+│       ├── tools/project_tools.py  # thin wrappers over retrieval/ingestion
+│       ├── schemas.py          # tool input types and output models
+│       ├── security.py         # allowed roots, file checks, untrusted wrapping
+│       └── errors.py           # internal errors -> safe tool errors
+├── scripts/
+│   └── mcp_smoke_test.py       # stdio client: list tools, ping, search
 ├── evaluation/
 │   ├── questions.json          # retrieval questions (fixture project)
 │   ├── questions_self.json     # retrieval questions (this repository)
@@ -353,7 +391,9 @@ ai-developer-assistant/
 │   ├── fixtures/sample_project/  # small fake repository used by tests
 │   └── test_*.py
 ├── docs/
-│   └── architecture.md
+│   ├── architecture.md
+│   ├── mcp.md                  # MCP tools, security model, client setup
+│   └── pending_llm_checks.md   # checks to run once an LLM key is set
 ├── .env.example
 ├── pyproject.toml
 └── uv.lock
@@ -370,6 +410,7 @@ ai-developer-assistant/
 - **Citations are verified.** Every `[Sx]` in an answer is checked against the sources actually sent, and unknown citations are reported.
 - **Respects `.assistantignore`.** An optional `.assistantignore` at the project root (same syntax as `.gitignore`) excludes files from the assistant only, without changing git. This repository uses it to keep `evaluation/` out of its own index.
 - **Respects `.gitignore`.** Files ignored by the repository's `.gitignore` files (root and nested, including `!` negations) are not indexed. Built-in exclusions still apply to repositories without a `.gitignore`.
+- **MCP is read-only and sandboxed to allowed roots.** MCP tools only work inside `MCP_ALLOWED_PROJECT_ROOTS`, reuse the ingestion file rules, cap output sizes, and return errors without absolute paths, stack traces or secrets.
 - **Path containment.** Every file path is resolved and must stay inside the project root, so `../` paths and symlinks pointing outside are rejected.
 
 ## License

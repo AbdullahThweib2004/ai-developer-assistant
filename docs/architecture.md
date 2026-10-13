@@ -418,3 +418,71 @@ functions the CLI uses. The embedding model is cached with
 `st.cache_resource`. Answers are rendered as Markdown with raw HTML disabled
 (Streamlit's default). The server binds to `localhost` through
 `.streamlit/config.toml`.
+
+## Phase 4: MCP server
+
+The MCP server exposes the existing read-only capabilities to any MCP client. It
+adds no new retrieval logic: every tool is a thin wrapper over the code the CLI
+uses.
+
+```mermaid
+flowchart LR
+    client([MCP client]) <-->|stdio JSON-RPC| server[server.py<br/>MCPServer + tools]
+    server --> errors[errors.py<br/>tool_errors]
+    errors --> tools[tools/project_tools.py]
+    tools --> sec[security.py<br/>resolve_project, check_project_file, wrap_untrusted]
+    sec --> loader[FileLoader.check_path<br/>shared with ingestion]
+    tools --> retr[Retriever / index_stats]
+    tools --> parser[parse_document]
+```
+
+### Layers
+
+- **`server.py`** builds an `MCPServer` (from the official `mcp` SDK, v2) and
+  registers five tools with descriptions written for an LLM client. All of them
+  carry read-only annotations (`read_only_hint=True`, `destructive_hint=False`,
+  `idempotent_hint=True`, `open_world_hint=False`). Input schemas come from
+  annotated parameters (`schemas.py`): `top_k` has `minimum`/`maximum` from
+  `MCP_MAX_TOP_K`, file types must match `^[a-z0-9]{1,10}$`, and strings have
+  length limits. Output schemas come from the Pydantic return models, which the
+  SDK also validates.
+- **`tools/project_tools.py`** (`ProjectTools`) holds the settings, the
+  resolved allowed roots and a lazily created embedding provider. The model
+  loads on the first search, not at startup. It calls `index_stats`,
+  `Retriever`, `FileLoader.discover` and `parse_document`.
+- **`security.py`**:
+  - `allowed_roots()` refuses to start without absolute roots.
+  - `resolve_project()` resolves the path (following symlinks) and requires it
+    to be inside a root.
+  - `check_project_file()` delegates to `FileLoader.check_path`.
+  - `wrap_untrusted()` wraps text in escaped `<untrusted-project-content>` tags.
+- **`errors.py`**: `tool_errors()` maps `SecurityError`, `InvalidQueryError`,
+  `ProjectNotIndexedError`, `EmbeddingModelMismatchError` and `VectorStoreError`
+  to `ToolError`s with our own messages. Anything else becomes a generic
+  "internal error" and only its type is logged. The SDK sends `ToolError`
+  messages to the client as `is_error` results.
+
+### Shared security checks
+
+Ingestion and the MCP server use the same rules from `FileLoader`:
+
+| Rule | Ingestion (`discover`) | MCP (`read_project_file`) |
+|---|---|---|
+| Inside the project root (`..`, absolute paths, symlinks) | `check_file` → `resolve_within_root` | `check_path` (lexical `..` normalization, then the same checks) |
+| Excluded / gitignored / assistantignored directories | `check_dir` while walking | `check_dir` on every ancestor |
+| Symlinked directories | never entered | refused (`outside_root` or `unreadable`) |
+| Sensitive names, gitignore, assistantignore, extension, size, binary | `check_file` | `check_file` |
+
+On top of that, the MCP layer adds allowed project roots, output caps
+(`MCP_MAX_FILE_CHARS` with a `truncated` flag, `MCP_MAX_TOP_K`, 1000 listed
+files), counts-only skip summaries, and untrusted-content wrapping. Tests assert
+that every file `discover` accepts is readable through MCP and every file it
+skips is refused.
+
+### Transport and logging
+
+The server runs over stdio. `main()` sends logging to stderr (and lowers per-request
+HTTP logs from model downloads to WARNING), so stdout carries only JSON-RPC. A test
+starts `python -m app.mcp_server` as a subprocess, runs initialize, `tools/list`
+and two `tools/call`s, and parses every stdout line as JSON-RPC. Entry points:
+`python -m app.mcp_server` and the `ai-dev-assistant-mcp` script.
