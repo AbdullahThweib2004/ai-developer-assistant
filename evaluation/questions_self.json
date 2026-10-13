@@ -36,5 +36,75 @@
     "relevant_files": [
       "app/retrieval/vector_store.py"
     ]
+  },
+  {
+    "id": "s06",
+    "question": "How are .gitignore files applied, including nested ones and negation patterns?",
+    "relevant_files": [
+      "app/ingestion/file_loader.py"
+    ]
+  },
+  {
+    "id": "s07",
+    "question": "How are JSON and YAML files validated without executing anything?",
+    "relevant_files": [
+      "app/ingestion/document_parser.py"
+    ]
+  },
+  {
+    "id": "s08",
+    "question": "How is the Chroma collection name derived for a project?",
+    "relevant_files": [
+      "app/retrieval/vector_store.py"
+    ]
+  },
+  {
+    "id": "s09",
+    "question": "How does the indexer batch embeddings and decide whether to rebuild an existing index?",
+    "relevant_files": [
+      "app/retrieval/indexer.py"
+    ]
+  },
+  {
+    "id": "s10",
+    "question": "How are overlapping chunks from the same file merged before building the prompt?",
+    "relevant_files": [
+      "app/rag/context_builder.py"
+    ]
+  },
+  {
+    "id": "s11",
+    "question": "How are invalid citations in an LLM answer detected?",
+    "relevant_files": [
+      "app/rag/answer_generator.py"
+    ]
+  },
+  {
+    "id": "s12",
+    "question": "Which LLM errors are retried, and how many times?",
+    "relevant_files": [
+      "app/llm/base.py"
+    ]
+  },
+  {
+    "id": "s13",
+    "question": "Why is temperature not sent to Claude models?",
+    "relevant_files": [
+      "app/llm/anthropic_provider.py"
+    ]
+  },
+  {
+    "id": "s14",
+    "question": "How does the MCP server stop a client from reading projects outside the allowed roots?",
+    "relevant_files": [
+      "app/mcp_server/security.py"
+    ]
+  },
+  {
+    "id": "s15",
+    "question": "How is returned file content marked as untrusted in MCP tool results?",
+    "relevant_files": [
+      "app/mcp_server/security.py"
+    ]
   }
 ]
