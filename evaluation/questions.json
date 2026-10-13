@@ -1,0 +1,14 @@
+[
+  {"id": "q01", "question": "How are user passwords checked during login?", "relevant_files": ["auth.py"]},
+  {"id": "q02", "question": "Which function verifies a username and password?", "relevant_files": ["auth.py"]},
+  {"id": "q03", "question": "What host and port does the database use?", "relevant_files": ["config.yaml"]},
+  {"id": "q04", "question": "What happens if the app cannot connect to PostgreSQL?", "relevant_files": ["database.py", "docs/troubleshooting.md"]},
+  {"id": "q05", "question": "How do I set up the project locally?", "relevant_files": ["README.md"]},
+  {"id": "q06", "question": "How do I run the tests?", "relevant_files": ["README.md"]},
+  {"id": "q07", "question": "Why does every login fail after changing the password hashing settings?", "relevant_files": ["docs/troubleshooting.md", "auth.py"]},
+  {"id": "q08", "question": "How are session tokens generated?", "relevant_files": ["auth.py"]},
+  {"id": "q09", "question": "Which environment variables need to be configured?", "relevant_files": [".env.example", "README.md"]},
+  {"id": "q10", "question": "What version is the project?", "relevant_files": ["data.json"]},
+  {"id": "q11", "question": "What does the main script print when it runs?", "relevant_files": ["main.py"]},
+  {"id": "q12", "question": "How many connections are kept in the database pool?", "relevant_files": ["config.yaml"]}
+]
