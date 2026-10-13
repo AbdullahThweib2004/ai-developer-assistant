@@ -28,6 +28,9 @@ chroma_data/
 *.jsonl
 evaluation/results/
 
+# Local MCP client configs (contain machine-specific paths)
+mcp-inspector.json
+
 # Editors
 .idea/
 .vscode/
