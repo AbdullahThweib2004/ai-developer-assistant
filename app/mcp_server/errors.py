@@ -10,6 +10,7 @@ from contextlib import contextmanager
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+from app.integrations.github_errors import GitHubError
 from app.mcp_server.security import SecurityError
 from app.retrieval.retriever import InvalidQueryError
 from app.retrieval.vector_store import EmbeddingModelMismatchError, ProjectNotIndexedError, VectorStoreError
@@ -40,6 +41,9 @@ def tool_errors(tool_name: str) -> Iterator[None]:
         ) from None
     except VectorStoreError:
         raise ToolError("The vector index could not be read.") from None
+    except GitHubError as exc:
+        # GitHub error messages are written by the client: no token, headers or raw responses.
+        raise ToolError(str(exc)) from None
     except Exception as exc:  # unexpected: log the type server-side (stderr), reveal nothing
         logger.error("Tool %s failed with %s", tool_name, type(exc).__name__)
         raise ToolError(f"{tool_name} failed due to an internal error.") from None
