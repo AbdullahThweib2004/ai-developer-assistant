@@ -5,13 +5,16 @@ description = "AI developer assistant combining RAG and MCP for codebase underst
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=1.13.0",
     "chromadb>=1.5.9",
+    "openai>=3.29.0",
     "pathspec>=1.1.1",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pymupdf>=1.24",
     "pyyaml>=6.0",
     "sentence-transformers>=6.1.0",
+    "streamlit>=1.65.0",
     "torch>=2.6",
 ]
 
