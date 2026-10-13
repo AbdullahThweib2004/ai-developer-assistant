@@ -160,3 +160,83 @@ def test_builtin_exclusions_apply_without_gitignore(project: Path) -> None:
     assert not (project / ".gitignore").exists()
     _, skipped = discover(project)
     assert skipped["node_modules"] == SkipReason.EXCLUDED_DIR
+
+
+# ---- .assistantignore and the shared single-path check ------------------------
+
+
+def test_assistantignore_skips_files_and_dirs(project: Path) -> None:
+    (project / ".assistantignore").write_text("docs/\nmain.py\n*.json\n!data.json\n")
+    (project / "extra.json").write_text("{}")
+    accepted, skipped = discover(project)
+    assert skipped["docs"] == SkipReason.ASSISTANTIGNORED
+    assert skipped["main.py"] == SkipReason.ASSISTANTIGNORED
+    assert skipped["extra.json"] == SkipReason.ASSISTANTIGNORED
+    assert "data.json" in accepted  # negation works
+    assert "auth.py" in accepted
+
+
+def test_assistantignore_is_only_read_at_the_root(project: Path) -> None:
+    (project / "docs" / ".assistantignore").write_text("*.md\n")
+    accepted, _ = discover(project)
+    assert "docs/troubleshooting.md" in accepted
+
+
+def test_without_assistantignore_nothing_extra_is_skipped(project: Path) -> None:
+    accepted, skipped = discover(project)
+    assert SkipReason.ASSISTANTIGNORED not in skipped.values()
+    assert accepted == FIXTURE_FILES
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        ("auth.py", None),
+        ("docs/troubleshooting.md", None),
+        (".env", SkipReason.SENSITIVE),
+        ("node_modules/lib/index.md", SkipReason.EXCLUDED_DIR),
+        (".venv/lib/site.py", SkipReason.EXCLUDED_DIR),
+        ("../outside.md", SkipReason.OUTSIDE_ROOT),
+        ("docs/../../outside.md", SkipReason.OUTSIDE_ROOT),
+        ("/etc/passwd", SkipReason.OUTSIDE_ROOT),
+        ("docs/../.env", SkipReason.SENSITIVE),
+        ("missing.py", SkipReason.UNREADABLE),
+        ("image.png", SkipReason.UNSUPPORTED_EXTENSION),
+    ],
+)
+def test_check_path_matches_discover_rules(project: Path, path: str, reason: SkipReason | None) -> None:
+    (project / "image.png").write_bytes(b"\x89PNG")
+    assert FileLoader(make_settings(project)).check_path(path)[0] == reason
+
+
+def test_check_path_applies_gitignore_and_assistantignore_dirs(project: Path) -> None:
+    (project / ".gitignore").write_text("build_out/\n")
+    (project / ".assistantignore").write_text("private/\n")
+    for directory in ("build_out", "private"):
+        (project / directory).mkdir()
+        (project / directory / "notes.md").write_text("# hidden")
+    loader = FileLoader(make_settings(project))
+    assert loader.check_path("build_out/notes.md")[0] == SkipReason.GITIGNORED
+    assert loader.check_path("private/notes.md")[0] == SkipReason.ASSISTANTIGNORED
+
+
+def test_check_path_rejects_symlinked_dirs(project: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.md").write_text("# private")
+    (project / "escape").symlink_to(outside, target_is_directory=True)
+    (project / "alias").symlink_to(project / "docs", target_is_directory=True)
+    loader = FileLoader(make_settings(project))
+    assert loader.check_path("escape/leak.md")[0] == SkipReason.OUTSIDE_ROOT
+    assert loader.check_path("alias/troubleshooting.md")[0] == SkipReason.UNREADABLE  # never indexed either
+
+
+def test_check_path_agrees_with_discover_on_every_file(project: Path) -> None:
+    (project / ".gitignore").write_text("*.log.md\n")
+    (project / "x.log.md").write_text("# log")
+    loader = FileLoader(make_settings(project))
+    result = loader.discover()
+    for path in result.files:
+        assert loader.check_path(loader.relative_path(path)) == (None, "")
+    for skipped in result.skipped:
+        assert loader.check_path(skipped.path)[0] is not None

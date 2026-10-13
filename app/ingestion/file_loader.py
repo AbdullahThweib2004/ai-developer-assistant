@@ -1,8 +1,12 @@
 """Discover which files in a project should be ingested.
 
 The loader only *looks* at files (names, sizes, a few leading bytes) and reads
-the project's .gitignore files. It never executes or imports project code, and
-never logs file contents.
+the project's .gitignore and .assistantignore files. It never executes or
+imports project code, and never logs file contents.
+
+``check_dir`` / ``check_file`` hold every rule; ``discover`` (ingestion) and
+``check_path`` (single-path access, e.g. the MCP server) both go through them,
+so there is exactly one definition of which files are allowed.
 """
 
 import fnmatch
@@ -22,6 +26,10 @@ BINARY_SNIFF_BYTES = 8192
 # Formats that are legitimately binary; the parser decides whether they are valid.
 BINARY_FORMATS = {".pdf"}
 GITIGNORE = ".gitignore"
+# Optional tool-specific ignore file at the project root (gitignore syntax).
+ASSISTANTIGNORE = ".assistantignore"
+
+Check = tuple[SkipReason | None, str]
 
 
 @dataclass
@@ -44,6 +52,8 @@ class FileLoader:
         self._sensitive_patterns = [p.lower() for p in settings.excluded_file_patterns]
         self._allowed_names = {n.lower() for n in settings.allowed_file_names}
         self._gitignore_specs: dict[Path, GitIgnoreSpec | None] = {}
+        self._assistantignore_spec: GitIgnoreSpec | None = None
+        self._assistantignore_loaded = False
 
     # ---- public API -----------------------------------------------------
 
@@ -81,9 +91,51 @@ class FileLoader:
             return None
         return resolved if resolved.is_relative_to(self.root) else None
 
-    def check_file(self, path: Path) -> tuple[SkipReason | None, str]:
+    def check_path(self, path: Path | str) -> Check:
+        """Check one file path from outside the walk (e.g. an MCP request).
+
+        ``path`` may be relative to the root or absolute. Applies the same
+        rules as ``discover``: every directory between the root and the file
+        must pass ``check_dir``, then the file must pass ``check_file``.
+        """
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = self.root / candidate
+        # Lexical normalization first, so "a/../../x" is judged by where it points.
+        normalized = Path(os.path.normpath(candidate))
+        if not normalized.is_relative_to(self.root) or normalized == self.root:
+            return SkipReason.OUTSIDE_ROOT, "path is outside the project root"
+        parts = normalized.relative_to(self.root).parts
+        for depth in range(1, len(parts)):
+            directory = self.root.joinpath(*parts[:depth])
+            if directory.is_symlink():
+                if self.resolve_within_root(directory) is None:
+                    return SkipReason.OUTSIDE_ROOT, "path goes through a symlink pointing outside the root"
+                return SkipReason.UNREADABLE, "path goes through a symlinked directory (not indexed)"
+            reason, detail = self.check_dir(directory)
+            if reason is not None:
+                return reason, detail
+        if not normalized.exists() and not normalized.is_symlink():
+            return SkipReason.UNREADABLE, "file does not exist"
+        return self.check_file(normalized)
+
+    def check_dir(self, path: Path) -> Check:
+        """Decide whether the walk may descend into directory ``path``."""
+        if any(fnmatch.fnmatchcase(path.name, pattern) for pattern in self._excluded_dirs):
+            return SkipReason.EXCLUDED_DIR, "excluded directory"
+        if path.is_symlink() and self.resolve_within_root(path) is None:
+            return SkipReason.OUTSIDE_ROOT, "symlinked dir points outside root"
+        if self.is_gitignored(path, is_dir=True):
+            return SkipReason.GITIGNORED, "directory matched by .gitignore"
+        if self.is_assistantignored(path, is_dir=True):
+            return SkipReason.ASSISTANTIGNORED, "directory matched by .assistantignore"
+        return None, ""
+
+    def check_file(self, path: Path) -> Check:
         """Decide whether a single file should be ingested.
 
+        Assumes its parent directories already passed ``check_dir`` (true
+        during ``discover``; ``check_path`` verifies it for single paths).
         Returns ``(None, "")`` if accepted, otherwise ``(reason, detail)``.
         """
         resolved = self.resolve_within_root(path)
@@ -94,6 +146,8 @@ class FileLoader:
             return SkipReason.SENSITIVE, "matches a sensitive file pattern"
         if self.is_gitignored(path):
             return SkipReason.GITIGNORED, "matched by .gitignore"
+        if self.is_assistantignored(path):
+            return SkipReason.ASSISTANTIGNORED, "matched by .assistantignore"
 
         suffix = path.suffix.lower()
         # Allow-listed names (e.g. .env.example) are indexed as plain text.
@@ -144,6 +198,15 @@ class FileLoader:
                 ignored = match
         return ignored
 
+    def is_assistantignored(self, path: Path, is_dir: bool = False) -> bool:
+        """True if the root ``.assistantignore`` ignores ``path`` (gitignore syntax)."""
+        spec = self._assistantignore()
+        path = Path(os.path.abspath(path))
+        if spec is None or not path.is_relative_to(self.root) or path == self.root:
+            return False
+        rel = path.relative_to(self.root).as_posix() + ("/" if is_dir else "")
+        return bool(spec.check_file(rel).include)
+
     def relative_path(self, path: Path) -> str:
         """Path relative to the root, POSIX style (used as a stable identifier)."""
         return path.relative_to(self.root).as_posix()
@@ -155,14 +218,11 @@ class FileLoader:
         keep: list[str] = []
         for name in sorted(dirnames):
             path = current / name
-            if any(fnmatch.fnmatchcase(name, pattern) for pattern in self._excluded_dirs):
-                self._skip(result, path, SkipReason.EXCLUDED_DIR, "excluded directory")
-            elif path.is_symlink() and self.resolve_within_root(path) is None:
-                self._skip(result, path, SkipReason.OUTSIDE_ROOT, "symlinked dir points outside root")
-            elif self.is_gitignored(path, is_dir=True):
-                self._skip(result, path, SkipReason.GITIGNORED, "directory matched by .gitignore")
-            else:
+            reason, detail = self.check_dir(path)
+            if reason is None:
                 keep.append(name)
+            else:
+                self._skip(result, path, reason, detail)
         dirnames[:] = keep
 
     def _skip(self, result: LoadResult, path: Path, reason: SkipReason, detail: str) -> None:
@@ -173,18 +233,28 @@ class FileLoader:
     def _gitignore_spec(self, directory: Path) -> GitIgnoreSpec | None:
         """Parsed .gitignore of ``directory`` (cached), or None if there is none."""
         if directory not in self._gitignore_specs:
-            spec = None
-            file = directory / GITIGNORE
-            resolved = self.resolve_within_root(file)
-            if resolved is not None and resolved.is_file():
-                try:
-                    if resolved.stat().st_size <= self.settings.max_file_size_bytes:
-                        lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
-                        spec = GitIgnoreSpec.from_lines(lines)
-                except (OSError, ValueError) as exc:
-                    logger.warning("Ignoring unreadable %s: %s", self.relative_path(file), type(exc).__name__)
-            self._gitignore_specs[directory] = spec
+            self._gitignore_specs[directory] = self._load_ignore_file(directory / GITIGNORE)
         return self._gitignore_specs[directory]
+
+    def _assistantignore(self) -> GitIgnoreSpec | None:
+        if not self._assistantignore_loaded:
+            self._assistantignore_spec = self._load_ignore_file(self.root / ASSISTANTIGNORE)
+            self._assistantignore_loaded = True
+        return self._assistantignore_spec
+
+    def _load_ignore_file(self, file: Path) -> GitIgnoreSpec | None:
+        """Parse an ignore file inside the root; None if missing or unreadable."""
+        resolved = self.resolve_within_root(file)
+        if resolved is None or not resolved.is_file():
+            return None
+        try:
+            if resolved.stat().st_size > self.settings.max_file_size_bytes:
+                return None
+            lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+            return GitIgnoreSpec.from_lines(lines)
+        except (OSError, ValueError) as exc:
+            logger.warning("Ignoring unreadable %s: %s", self.relative_path(file), type(exc).__name__)
+            return None
 
     @staticmethod
     def _looks_binary(path: Path) -> bool:
