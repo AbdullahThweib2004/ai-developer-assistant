@@ -119,6 +119,9 @@ def map_openai_error(exc: openai.APIError) -> LLMError:
         return LLMAuthError("The LLM server rejected the API key. Check OPENAI_API_KEY.")
     if isinstance(exc, openai.RateLimitError):
         return LLMRateLimitError("LLM rate limit reached. Wait a moment and try again.")
+    if isinstance(exc, openai.APIStatusError) and exc.status_code == 402:
+        # OpenRouter and some other gateways use 402 for an exhausted balance.
+        return LLMBadRequestError("The LLM provider reports insufficient credits (HTTP 402). Add credits and retry.")
     if isinstance(exc, openai.NotFoundError):
         return LLMBadRequestError("The LLM server did not recognize the model. Check LLM_MODEL.")
     if isinstance(exc, openai.APIStatusError):

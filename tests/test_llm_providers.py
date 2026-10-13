@@ -124,6 +124,7 @@ def test_anthropic_error_mapping(make_exc, expected) -> None:
         (lambda: status_error(openai, "RateLimitError", 429), LLMRateLimitError),
         (lambda: status_error(openai, "NotFoundError", 404), LLMBadRequestError),
         (lambda: status_error(openai, "InternalServerError", 503), LLMServerError),
+        (lambda: status_error(openai, "APIStatusError", 402), LLMBadRequestError),
     ],
 )
 def test_openai_error_mapping(make_exc, expected) -> None:
@@ -214,6 +215,10 @@ def openai_provider(create, **kwargs) -> tuple[OpenAICompatibleProvider, MagicMo
     client = MagicMock()
     client.chat.completions.create.side_effect = create
     return OpenAICompatibleProvider("gpt-test", SecretStr(FAKE_KEY), client=client, **kwargs), client
+
+
+def test_openai_402_says_insufficient_credits() -> None:
+    assert "insufficient credits" in str(map_openai_error(status_error(openai, "APIStatusError", 402)))
 
 
 def test_openai_generate_and_token_parameter_choice() -> None:
