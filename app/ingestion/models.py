@@ -12,6 +12,7 @@ class SkipReason(StrEnum):
 
     EXCLUDED_DIR = "excluded_dir"
     SENSITIVE = "sensitive"
+    GITIGNORED = "gitignored"
     UNSUPPORTED_EXTENSION = "unsupported_extension"
     TOO_LARGE = "too_large"
     BINARY = "binary"

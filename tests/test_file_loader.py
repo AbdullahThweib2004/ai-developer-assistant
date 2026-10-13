@@ -100,3 +100,63 @@ def test_symlink_disguising_secret_is_skipped(project: Path) -> None:
 def test_root_must_be_a_directory(project: Path) -> None:
     with pytest.raises(NotADirectoryError):
         discover(project / "README.md")
+
+
+# ---- .gitignore support ------------------------------------------------------
+
+
+def test_root_gitignore_skips_files_and_dirs(project: Path) -> None:
+    (project / ".gitignore").write_text("*.log.md\ngenerated/\n/local_notes.md\n")
+    (project / "debug.log.md").write_text("# log")
+    (project / "generated").mkdir()
+    (project / "generated" / "out.py").write_text("x = 1")
+    (project / "local_notes.md").write_text("# notes")
+    (project / "docs" / "local_notes.md").write_text("# not anchored to root")
+
+    accepted, skipped = discover(project)
+    assert skipped["debug.log.md"] == SkipReason.GITIGNORED
+    assert skipped["generated"] == SkipReason.GITIGNORED
+    assert "generated/out.py" not in accepted | skipped.keys()  # never descended
+    assert skipped["local_notes.md"] == SkipReason.GITIGNORED
+    assert "docs/local_notes.md" in accepted  # "/pattern" only matches at the root
+    assert FIXTURE_FILES <= accepted
+
+
+def test_nested_gitignore_and_negation(project: Path) -> None:
+    (project / ".gitignore").write_text("*.md\n!README.md\n")
+    pkg = project / "pkg"
+    pkg.mkdir()
+    (pkg / ".gitignore").write_text("!keep.md\nscratch.py\n")
+    (pkg / "keep.md").write_text("# keep")
+    (pkg / "drop.md").write_text("# drop")
+    (pkg / "scratch.py").write_text("x = 1")
+    (pkg / "module.py").write_text("x = 2")
+
+    accepted, skipped = discover(project)
+    assert "README.md" in accepted  # negated in the root .gitignore
+    assert skipped["docs/troubleshooting.md"] == SkipReason.GITIGNORED
+    assert "pkg/keep.md" in accepted  # nested !keep.md overrides the root *.md
+    assert skipped["pkg/drop.md"] == SkipReason.GITIGNORED
+    assert skipped["pkg/scratch.py"] == SkipReason.GITIGNORED  # nested rule applies in pkg/
+    assert "pkg/module.py" in accepted
+
+
+def test_nested_gitignore_does_not_affect_siblings(project: Path) -> None:
+    (project / "pkg").mkdir()
+    (project / "pkg" / ".gitignore").write_text("*.py\n")
+    (project / "pkg" / "a.py").write_text("x = 1")
+    accepted, skipped = discover(project)
+    assert skipped["pkg/a.py"] == SkipReason.GITIGNORED
+    assert "main.py" in accepted
+
+
+def test_sensitive_takes_precedence_over_gitignore(project: Path) -> None:
+    (project / ".gitignore").write_text(".env\n")
+    _, skipped = discover(project)
+    assert skipped[".env"] == SkipReason.SENSITIVE
+
+
+def test_builtin_exclusions_apply_without_gitignore(project: Path) -> None:
+    assert not (project / ".gitignore").exists()
+    _, skipped = discover(project)
+    assert skipped["node_modules"] == SkipReason.EXCLUDED_DIR
