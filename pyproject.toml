@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic>=1.13.0",
     "chromadb>=1.5.9",
+    "mcp>=2.3.0",
     "openai>=3.29.0",
     "pathspec>=1.1.1",
     "pydantic>=2.7",
@@ -26,6 +27,9 @@ torch = [{ index = "pytorch-cpu" }]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[project.scripts]
+ai-dev-assistant-mcp = "app.mcp_server.server:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
