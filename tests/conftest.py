@@ -35,3 +35,21 @@ def index_settings(project: Path, tmp_path: Path) -> Settings:
         chunk_size=300,
         chunk_overlap=50,
     )
+
+
+# Settings read from the environment that would change test behavior.
+_ISOLATED_ENV = (
+    "PROJECT_ROOT", "CHUNK_SIZE", "CHUNK_OVERLAP", "EMBEDDING_PROVIDER", "EMBEDDING_MODEL",
+    "CHROMA_PERSIST_DIR", "CHROMA_COLLECTION_PREFIX", "RETRIEVAL_TOP_K", "RETRIEVAL_MIN_SCORE",
+    "LLM_PROVIDER", "LLM_MODEL", "LLM_BASE_URL", "LLM_TEMPERATURE", "LLM_MAX_OUTPUT_TOKENS",
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "RAG_MAX_CONTEXT_CHARS",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's shell variables out of tests (slow tests use the real config)."""
+    if request.node.get_closest_marker("slow"):
+        return
+    for name in _ISOLATED_ENV:
+        monkeypatch.delenv(name, raising=False)
