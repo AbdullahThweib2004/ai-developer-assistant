@@ -104,7 +104,7 @@ cp .env.example .env
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model name; stored with the index |
 | `EMBEDDING_BATCH_SIZE` | `32` | Chunks embedded per batch |
 | `CHROMA_PERSIST_DIR` | `./chroma_db` | Where the vector index is stored (gitignored) |
-| `CHROMA_COLLECTION_PREFIX` | `project` | Collections are named `<prefix>_<project_name>` |
+| `CHROMA_COLLECTION_PREFIX` | `project` | Collections are named `<prefix>_<folder_name>_<path_hash>` |
 | `RETRIEVAL_TOP_K` | `5` | Default number of search results |
 | `RETRIEVAL_MIN_SCORE` | `0.0` | Minimum similarity (0–1) for a result |
 
@@ -152,6 +152,11 @@ uv run python -m app.cli search --path ./some/repo "database settings" --type ya
 # What is indexed for a repository
 uv run python -m app.cli stats --path ./some/repo
 ```
+
+> **Upgrading from an earlier version:** collection names now include a hash of the
+> repository's absolute path (`project_<folder>_<hash8>`). Indexes created before
+> this change are not found under the new name. Re-run `index --path <repo> --rebuild`
+> once per repository, then optionally delete the old `chroma_db/` directory.
 
 Example search output:
 
@@ -228,6 +233,7 @@ ai-developer-assistant/
 - **Secrets never leave the machine.** `.env` files, keys, certificates and credential files are skipped before they are read, and are never logged or indexed. Secrets are never committed to this repository.
 - **Human approval for write actions.** Creating issues, comments or pull requests always needs explicit confirmation from the user.
 - **Retrieved content is untrusted.** Text from indexed files or GitHub is treated as data, never as instructions, to guard against prompt injection.
+- **Respects `.gitignore`.** Files ignored by the repository's `.gitignore` files (root and nested, including `!` negations) are not indexed. Built-in exclusions still apply to repositories without a `.gitignore`.
 - **Path containment.** Every file path is resolved and must stay inside the project root, so `../` paths and symlinks pointing outside are rejected.
 
 ## License

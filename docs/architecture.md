@@ -50,12 +50,30 @@ reason:
 |---|---|---|
 | 1 | Resolved path is inside the root | `outside_root` |
 | 2 | File name *or symlink target name* matches a sensitive pattern (unless allow-listed) | `sensitive` |
-| 3 | Extension is supported (allow-listed names such as `.env.example` bypass this) | `unsupported_extension` |
-| 4 | It is a regular file and can be read | `unreadable` |
-| 5 | Size is within `MAX_FILE_SIZE_MB` | `too_large` |
-| 6 | No NUL bytes in the first 8 KB (PDFs are exempt) | `binary` |
+| 3 | Not ignored by the project's `.gitignore` files | `gitignored` |
+| 4 | Extension is supported (allow-listed names such as `.env.example` bypass this) | `unsupported_extension` |
+| 5 | It is a regular file and can be read | `unreadable` |
+| 6 | Size is within `MAX_FILE_SIZE_MB` | `too_large` |
+| 7 | No NUL bytes in the first 8 KB (PDFs are exempt) | `binary` |
 | – | Excluded directory (recorded once, not per file) | `excluded_dir` |
 | – | The parser failed (recorded by the parser stage) | `parse_error` |
+
+#### .gitignore handling
+
+Directories are also pruned if a `.gitignore` ignores them. The loader reads every
+`.gitignore` inside the project root with `pathspec.GitIgnoreSpec`, which follows
+git's rules:
+
+- Patterns are relative to the directory that contains the `.gitignore`.
+- For a given path, the `.gitignore` files of each ancestor directory are
+  applied from the root downwards, and a deeper file overrides a shallower one.
+- Within one file, the last matching pattern wins, so `!keep.md` re-includes a file.
+- As in git, files inside an ignored directory can't be re-included, because
+  the walker never enters that directory.
+
+`.gitignore` files outside the project root, and `.git/info/exclude`, are not
+read. Sensitive-file detection runs first, so a `.env` is reported as
+`sensitive` even if it is also gitignored.
 
 Each skip is recorded as a `SkippedFile(path, reason, detail)` and logged at INFO
 level, so the CLI can report counts per reason.
@@ -171,9 +189,12 @@ All providers return L2-normalized vectors.
 [`vector_store.py`](../app/retrieval/vector_store.py) wraps
 `chromadb.PersistentClient` (telemetry disabled), with one collection per project:
 
-- **Name:** `<CHROMA_COLLECTION_PREFIX>_<safe_project_name>`, lowercased and
-  sanitized to `[a-z0-9_-]`, at most 63 characters. The project name is the
-  repository's directory name.
+- **Name:** `<CHROMA_COLLECTION_PREFIX>_<safe_folder_name>_<hash8>`. The folder
+  name is lowercased and sanitized to `[a-z0-9_-]`. `hash8` is the first 8 hex
+  characters of the SHA-256 of the resolved absolute path, so two repositories
+  with the same folder name (e.g. two checkouts of `api/`) get separate
+  collections. Names are at most 63 characters, and the folder part is truncated
+  first.
 - **Space:** cosine (`hnsw:space = "cosine"`). Similarity is computed as
   `1 - cosine distance`.
 - **Records:** id = `chunk_id`, document = chunk content, plus metadata:
