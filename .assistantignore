@@ -1,0 +1,3 @@
+# Files the assistant should not index (same syntax as .gitignore).
+# Evaluation questions and results would otherwise leak answers into self-repo searches.
+evaluation/
