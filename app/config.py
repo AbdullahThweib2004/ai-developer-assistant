@@ -1,6 +1,7 @@
 """Application settings, loaded from environment variables and an optional .env file."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,6 +33,17 @@ class Settings(BaseSettings):
     ]
     # File names that are always allowed, even if they match an excluded pattern.
     allowed_file_names: list[str] = [".env.example"]
+
+    # ---- Phase 2: embeddings, vector store, retrieval ----
+    # "fake" is a deterministic, offline provider intended for tests.
+    embedding_provider: Literal["sentence_transformers", "fake"] = "sentence_transformers"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_batch_size: int = Field(default=32, gt=0)
+    chroma_persist_dir: Path = Path("./chroma_db")
+    chroma_collection_prefix: str = Field(default="project", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    retrieval_top_k: int = Field(default=5, gt=0)
+    # Minimum similarity (1 - cosine distance) a result needs to be returned.
+    retrieval_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _check_overlap(self) -> "Settings":

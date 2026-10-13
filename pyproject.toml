@@ -5,10 +5,12 @@ description = "AI developer assistant: RAG over your repositories (Phase 1: inge
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "chromadb>=1.5.9",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pymupdf>=1.24",
     "pyyaml>=6.0",
+    "sentence-transformers>=6.1.0",
 ]
 
 [dependency-groups]
@@ -24,3 +26,9 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["slow: downloads/runs a real embedding model (run with: pytest -m slow)"]
+addopts = "-m 'not slow'"
+filterwarnings = [
+    # Raised inside chromadb on Python 3.14; not actionable here.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+]
