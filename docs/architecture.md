@@ -549,8 +549,11 @@ flowchart LR
 ### Search scoping
 
 `build_search_query` never lets user text change the scope. The text is
-tokenized, and anything that looks like a qualifier (`word:value`), the
-`AND`/`OR`/`NOT` operators, leading `-`, quotes and parentheses are removed. The
+tokenized. Tokens whose key is a known GitHub qualifier (`KNOWN_QUALIFIERS`,
+taken from GitHub's documented list, also when prefixed with `-`, `"` or `(`) are
+dropped, along with the `AND`/`OR`/`NOT` operators, leading `-`, quotes and
+parentheses. Any other `word:value` has its colon replaced by a space, so error
+messages keep their words. The
 server then appends `repo:owner/name` plus `is:issue`/`is:pr` and
 `state:open`/`state:closed` from the typed parameters. The text is capped at
 GitHub's 256-character limit. As a second check, results whose `repository_url`

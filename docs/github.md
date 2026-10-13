@@ -126,9 +126,14 @@ Notes for clients:
 2. **Scoped requests.**
    - Repository identifiers are validated with a strict pattern and checked
      against the allowlist before any request.
-   - Search text is reduced to plain terms: qualifiers (`repo:`, `org:`, `is:`, …),
-     `AND`/`OR`/`NOT`, negation, quotes and parentheses are removed, and the
-     server appends `repo:owner/name`. Results from any other repository are
+   - Search text is reduced to plain terms. Tokens using a **known GitHub
+     qualifier** (`repo:`, `org:`, `user:`, `is:`, `in:`, `label:`, `author:`,
+     `state:`, `type:` and the rest of GitHub's documented list, also when
+     negated, quoted or parenthesized) are removed, along with `AND`/`OR`/`NOT`,
+     negation, quotes and parentheses. Other colons become spaces, so error text
+     keeps its words: `KeyError: 'token'` → `KeyError token`, and
+     `jwt.exceptions:DecodeError` → `jwt.exceptions DecodeError`. The server
+     then appends `repo:owner/name`, and results from any other repository are
      dropped as a second check.
 3. **No token leaks.**
    - The token is only sent to `GITHUB_API_URL`. Pagination links to other hosts

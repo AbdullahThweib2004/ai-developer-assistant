@@ -124,23 +124,42 @@ def resolve_repo(settings: Settings, repo: str | None) -> RepoRef:
 # ---- pure helpers ----------------------------------------------------------------
 
 _OPERATORS = {"AND", "OR", "NOT"}
-_QUALIFIER = re.compile(r":\S")  # "word:value" (a trailing colon alone is harmless)
+# Qualifiers from GitHub's "Searching issues and pull requests" docs, plus a few
+# general search keywords (sort, has, parent-issue, sub-issue). Tokens using one
+# of these are dropped; any other "word:value" keeps its words.
+KNOWN_QUALIFIERS = frozenset({
+    "type", "is", "in", "user", "org", "repo", "state", "archived", "reason", "author", "assignee",
+    "mentions", "team", "commenter", "involves", "linked", "label", "milestone", "project", "status",
+    "head", "base", "language", "comments", "interactions", "reactions", "draft", "review",
+    "reviewed-by", "review-requested", "review-involves", "user-review-requested",
+    "team-review-requested", "team-review-requested-user", "created", "updated", "closed", "merged",
+    "no", "sort", "has", "parent-issue", "sub-issue",
+})
+
+
+def _is_qualifier(token: str) -> bool:
+    """True for "qualifier:value", also when negated, quoted or parenthesized."""
+    key, sep, _ = token.lstrip("-(\"'").partition(":")
+    return bool(sep) and key.lower() in KNOWN_QUALIFIERS
 
 
 def sanitize_search_text(text: str) -> str:
     """Reduce user text to plain search terms.
 
-    Drops anything that could change the query's scope: qualifiers
-    (``repo:x/y``, ``org:``, ``is:``...), boolean operators, negation,
-    quotes and parentheses. The result is capped at GitHub's 256 characters.
+    Drops anything that could change the query's scope: known GitHub
+    qualifiers (``repo:x/y``, ``org:``, ``is:``, ``label:``...), boolean
+    operators, negation, quotes and parentheses. Other colons are treated as
+    spaces, so error text such as ``KeyError: 'token'`` or
+    ``jwt.exceptions:DecodeError`` keeps its words. Capped at 256 characters.
     """
     terms = []
     for raw in text.split():
-        if _QUALIFIER.search(raw):
+        if _is_qualifier(raw):
             continue
-        term = re.sub(r"[^\w.#+/@'-]", "", raw).lstrip("-")
-        if term and term not in _OPERATORS:
-            terms.append(term)
+        for piece in raw.replace(":", " ").split():
+            term = re.sub(r"[^\w.#+/@'-]", "", piece).lstrip("-").strip("'")
+            if term and term not in _OPERATORS:
+                terms.append(term)
     return " ".join(terms)[:MAX_SEARCH_TEXT].strip()
 
 

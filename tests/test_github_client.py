@@ -201,6 +201,38 @@ def test_search_query_qualifiers_from_parameters() -> None:
     assert build_search_query(REPO, "crash", "closed", "pr") == "crash repo:octo-org/demo is:pr state:closed"
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("KeyError: 'token'", "KeyError token"),
+        ("jwt.exceptions:DecodeError: Signature verification failed",
+         "jwt.exceptions DecodeError Signature verification failed"),
+        ("HTTPBearer 401 Unauthorized: Not authenticated", "HTTPBearer 401 Unauthorized Not authenticated"),
+        ('File "app/main.py", line 12, in get_user', "File app/main.py line 12 in get_user"),
+        ("sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) could not connect",
+         "sqlalchemy.exc.OperationalError psycopg2.OperationalError could not connect"),
+        ("ValueError:invalid literal for int() with base 10: 'abc'",
+         "ValueError invalid literal for int with base 10 abc"),
+        ("ModuleNotFoundError: No module named 'fastapi.security'",
+         "ModuleNotFoundError No module named fastapi.security"),
+        ("see https://example.com/x for details", "see https //example.com/x for details"),
+    ],
+)
+def test_error_messages_keep_their_words(text: str, expected: str) -> None:
+    assert sanitize_search_text(text) == expected
+    query = build_search_query(REPO, text, "all", "any")
+    assert query == f"{expected} repo:octo-org/demo"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["REPO:other/x token", "token Label:bug", "token -author:mallory", "token (org:evil)",
+     'token "user:mallory"', "token type:pr in:comments", "token reviewed-by:x team-review-requested:y/z"],
+)
+def test_known_qualifiers_dropped_in_any_form(text: str) -> None:
+    assert sanitize_search_text(text) == "token"
+
+
 def test_search_text_sanitizing_keeps_useful_terms() -> None:
     assert sanitize_search_text("Error: 401 Unauthorized bearer-token #12 C++") == "Error 401 Unauthorized bearer-token #12 C++"
     assert len(sanitize_search_text("word " * 200)) <= 256
