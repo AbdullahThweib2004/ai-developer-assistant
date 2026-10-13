@@ -49,6 +49,30 @@ def open_store(settings: Settings, project_path: Path, model_name: str | None) -
     return ChromaVectorStore(settings.chroma_persist_dir, name, model_name)
 
 
+@dataclass
+class IndexStats:
+    """What is currently indexed for a project."""
+
+    collection_name: str
+    chunk_count: int
+    model_name: str | None
+    files: list[str]
+
+
+def index_stats(settings: Settings, project_path: Path) -> IndexStats:
+    """Read index statistics without loading an embedding model.
+
+    Raises ProjectNotIndexedError if the project has no index.
+    """
+    store = open_store(settings, project_path, model_name=None)  # inspect only
+    return IndexStats(
+        collection_name=store.name,
+        chunk_count=store.count(),
+        model_name=store.stored_model(),
+        files=store.list_indexed_files(),
+    )
+
+
 def build_index(
     project_path: Path,
     rebuild: bool = True,
