@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_batch_size: int = Field(default=32, gt=0)
     chroma_persist_dir: Path = Path("./chroma_db")
-    chroma_collection_prefix: str = Field(default="project", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    chroma_collection_prefix: str = Field(default="project", max_length=20, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     retrieval_top_k: int = Field(default=5, gt=0)
     # Minimum similarity (1 - cosine distance) a result needs to be returned.
     retrieval_min_score: float = Field(default=0.0, ge=0.0, le=1.0)

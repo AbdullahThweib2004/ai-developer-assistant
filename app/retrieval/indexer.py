@@ -45,7 +45,7 @@ def project_name_for(project_path: Path) -> str:
 
 def open_store(settings: Settings, project_path: Path, model_name: str | None) -> ChromaVectorStore:
     """The vector store for ``project_path`` (``model_name=None``: inspect only)."""
-    name = collection_name(settings.chroma_collection_prefix, project_name_for(project_path))
+    name = collection_name(settings.chroma_collection_prefix, project_path)
     return ChromaVectorStore(settings.chroma_persist_dir, name, model_name)
 
 

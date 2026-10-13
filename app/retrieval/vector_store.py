@@ -1,5 +1,6 @@
 """A thin wrapper around a persistent Chroma collection (one per project)."""
 
+import hashlib
 import json
 import logging
 import re
@@ -48,10 +49,22 @@ class QueryResult:
         return 1.0 - self.distance
 
 
-def collection_name(prefix: str, project_name: str) -> str:
-    """``<prefix>_<safe_project_name>``, valid under Chroma's naming rules."""
-    safe = re.sub(r"[^a-z0-9_-]+", "_", project_name.lower()).strip("_-") or "default"
-    return f"{prefix}_{safe}"[:63].rstrip("_-")
+MAX_COLLECTION_NAME = 63  # Chroma allows more, but short names are easier to read
+
+
+def collection_name(prefix: str, project_path: Path) -> str:
+    """``<prefix>_<safe_folder_name>_<hash8>`` for a project directory.
+
+    The 8-character hash of the resolved absolute path keeps two different
+    folders with the same name apart. The result only uses ``[a-z0-9_-]``,
+    starts with the prefix and ends with the hash, as Chroma requires.
+    """
+    resolved = project_path.resolve()
+    digest = hashlib.sha256(str(resolved).encode()).hexdigest()[:8]
+    safe = re.sub(r"[^a-z0-9_-]+", "_", resolved.name.lower()).strip("_-") or "default"
+    room = MAX_COLLECTION_NAME - len(prefix) - len(digest) - 2
+    safe = safe[:room].strip("_-") or "default"
+    return f"{prefix}_{safe}_{digest}"
 
 
 def to_chroma_metadata(metadata: dict[str, Any]) -> dict[str, MetadataValue]:

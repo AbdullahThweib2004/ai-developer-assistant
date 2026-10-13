@@ -26,7 +26,7 @@ def test_index_report_matches_pipeline(index_settings: Settings) -> None:
     assert report.chunks_indexed == len(expected.chunks)
     assert report.files_indexed == len(expected.documents)
     assert report.model_name == FakeEmbeddingProvider().name
-    assert report.collection_name == "project_sample_project"
+    assert report.collection_name.startswith("project_sample_project_")
     assert sum(report.chunks_per_file_type.values()) == report.chunks_indexed
     assert report.duration_seconds >= 0
 
@@ -109,7 +109,7 @@ def test_cli_index_search_stats(index_settings: Settings, monkeypatch: pytest.Mo
     assert "not indexed" in capsys.readouterr().err
 
     assert main(["index", "--path", path]) == 0
-    assert "project_sample_project" in capsys.readouterr().out
+    assert "project_sample_project_" in capsys.readouterr().out
     assert main(["index", "--path", path]) == 1  # exists, no --rebuild
     assert main(["index", "--path", path, "--rebuild"]) == 0
 

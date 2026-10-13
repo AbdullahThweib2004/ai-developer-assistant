@@ -1,5 +1,6 @@
 """Tests for the Chroma wrapper."""
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,11 +44,27 @@ def add(store: ChromaVectorStore, chunks: list[Chunk], extra: dict | None = None
     store.upsert_chunks(chunks, PROVIDER.embed_documents([c.content for c in chunks]), extra)
 
 
-def test_collection_name_is_sanitized() -> None:
-    assert collection_name("project", "sample_project") == "project_sample_project"
-    assert collection_name("project", "My Repo!.v2") == "project_my_repo_v2"
-    assert collection_name("project", "...") == "project_default"
-    assert len(collection_name("p", "x" * 200)) <= 63
+@pytest.mark.parametrize(
+    ("folder", "expected_middle"),
+    [("sample_project", "sample_project"), ("My Repo!.v2", "my_repo_v2"), ("...", "default")],
+)
+def test_collection_name_is_sanitized(tmp_path: Path, folder: str, expected_middle: str) -> None:
+    name = collection_name("project", tmp_path / folder)
+    assert re.fullmatch(rf"project_{re.escape(expected_middle)}_[0-9a-f]{{8}}", name)
+
+
+def test_collection_name_respects_chroma_limits(tmp_path: Path) -> None:
+    name = collection_name("project", tmp_path / ("x" * 300))
+    assert 3 <= len(name) <= 63
+    assert re.fullmatch(r"[a-z0-9][a-z0-9_-]*[a-z0-9]", name)
+
+
+def test_same_folder_name_in_different_places_gets_different_collections(tmp_path: Path) -> None:
+    a = collection_name("project", tmp_path / "team_a" / "api")
+    b = collection_name("project", tmp_path / "team_b" / "api")
+    assert a != b
+    assert a.startswith("project_api_") and b.startswith("project_api_")
+    assert collection_name("project", tmp_path / "team_a" / "x" / ".." / "api") == a  # resolved
 
 
 def test_to_chroma_metadata_flattens_unsupported_values() -> None:
