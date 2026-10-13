@@ -6,10 +6,11 @@ repository's code and documentation, answers questions using the retrieved code 
 cited context, and helps investigate errors. Through an MCP server it works with GitHub
 issues and pull requests, and any write action needs explicit human approval.
 
-> **Status:** Phases 1–4 are complete. You can index a repository and ask cited
-> questions from the CLI or a Streamlit UI, and any MCP client (Claude Desktop, Cursor,
-> MCP Inspector) can search and read indexed projects through a read-only MCP server.
-> Phase 5 (GitHub integration) is next.
+> **Status:** Phases 1–5 are complete. You can index a repository and ask cited
+> questions from the CLI or a Streamlit UI. Any MCP client (Claude Desktop, Cursor,
+> MCP Inspector) can search and read indexed projects and look up GitHub repositories,
+> issues and pull requests through a read-only MCP server. Phase 6 (RAG + MCP
+> orchestration) is next.
 
 ## Key features (planned)
 
@@ -27,8 +28,8 @@ issues and pull requests, and any write action needs explicit human approval.
 | 2 | Embeddings & vector search | ✅ Done |
 | 3 | RAG question answering | ✅ Done |
 | 4 | MCP server | ✅ Done |
-| 5 | GitHub integration | ⏭️ Next |
-| 6 | RAG + MCP orchestration | Planned |
+| 5 | GitHub integration (read-only) | ✅ Done |
+| 6 | RAG + MCP orchestration | ⏭️ Next |
 | 7 | Human-approved issue creation | Planned |
 | 8 | Evaluation, security & documentation | Planned |
 
@@ -39,8 +40,9 @@ and splits them into chunks. The chunks are embedded and stored in Chroma. At qu
 time the retriever finds the most relevant chunks, and the LLM answers using only that
 context, with citations. The same retrieval and file-access code is exposed to external
 MCP clients through a read-only MCP server. One shared set of file rules
-(`FileLoader.check_path`) decides what both ingestion and the MCP server may read.
-Later phases add GitHub tools and an orchestration layer.
+(`FileLoader.check_path`) decides what both ingestion and the MCP server may read. A
+GET-only GitHub client gives the CLI and the MCP server access to issues and pull
+requests on an allowlist of repositories. An orchestration layer comes next.
 
 ```mermaid
 flowchart LR
@@ -57,9 +59,11 @@ flowchart LR
     client([MCP client<br/>Claude Desktop, Cursor, Inspector]) <-->|stdio| mcp[MCP server<br/>read-only tools]
     mcp --> retriever
     mcp --> rules
+    mcp --> ghc[GitHub client<br/>GET only, allowlist]
+    ui --> ghc
+    ghc -->|HTTPS| gh[GitHub REST API]
 
-    orch[Orchestration<br/>planned] -.-> mcp
-    mcp -.->|Phase 5| gh[GitHub API]
+    orch[Orchestration<br/>Phase 6] -.-> mcp
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the detailed design.
@@ -77,6 +81,7 @@ See [docs/architecture.md](docs/architecture.md) for the detailed design.
 - **pathspec**: `.gitignore` matching
 - **pytest**: tests
 - **MCP Python SDK** (`mcp`): MCP server and test client
+- **httpx**: GitHub REST client (no GitHub wrapper library)
 
 ## Getting started
 
@@ -133,6 +138,10 @@ cp .env.example .env
 | `MCP_ALLOWED_PROJECT_ROOTS` | *(empty)* | Comma-separated absolute paths the MCP server may read; empty = server won't start |
 | `MCP_MAX_FILE_CHARS` | `20000` | Max characters returned by `read_project_file` |
 | `MCP_MAX_TOP_K` | `10` | Max `top_k` for the MCP `search_project` tool |
+| `GITHUB_TOKEN` | *(none)* | Optional fine-grained read-only token (higher rate limits, private repos) |
+| `GITHUB_DEFAULT_REPO` | *(none)* | `owner/name` used when no repo is given |
+| `GITHUB_ALLOWED_REPOS` | *(empty)* | Comma-separated allowlist; empty = only the default repo |
+| `GITHUB_API_URL`, `GITHUB_TIMEOUT_SECONDS`, `GITHUB_MAX_RESULTS`, `GITHUB_MAX_PAGES`, `GITHUB_MAX_BODY_CHARS`, `GITHUB_MAX_COMMENTS` | see [docs/github.md](docs/github.md) | Limits for GitHub requests and output |
 
 ### LLM provider setup
 
@@ -278,6 +287,26 @@ the project), wraps all returned file text as untrusted content, and never write
 executes code or calls an LLM. See **[docs/mcp.md](docs/mcp.md)** for tool schemas,
 the security model, and setup for MCP Inspector, Claude Desktop and Cursor.
 
+### GitHub (read-only)
+
+Look up repositories, issues and pull requests. This works without a token for
+public repositories, and uses `GITHUB_TOKEN` automatically when it's set.
+
+```bash
+export GITHUB_ALLOWED_REPOS=fastapi/fastapi    # or set it (and GITHUB_DEFAULT_REPO) in .env
+uv run python -m app.cli github repo --repo fastapi/fastapi
+uv run python -m app.cli github search "401 unauthorized bearer token" --repo fastapi/fastapi --kind any
+uv run python -m app.cli github issue 10177 --repo fastapi/fastapi
+uv run python -m app.cli github prs --repo fastapi/fastapi --state closed
+uv run python -m app.cli github pr 16476 --repo fastapi/fastapi
+```
+
+Each command ends with the remaining rate limit. The same client powers five MCP
+tools (`get_github_repository`, `search_github_issues`, `get_github_issue`,
+`list_github_pull_requests`, `get_github_pull_request`). Nothing is ever written to
+GitHub. See **[docs/github.md](docs/github.md)** for token setup (minimum
+permissions), the allowlist, rate limits and the security model.
+
 ### Run the tests
 
 ```bash
@@ -317,8 +346,11 @@ hybrid search later:
 uv run python evaluation/evaluate_retrieval.py --path . --questions evaluation/questions_self.json
 ```
 
-Self-repo baseline (5 questions, 48 files, `evaluation/` excluded via `.assistantignore`):
-Precision@5 0.200, Recall@5 0.700, MRR 0.440. `s01` (the hard case) is still a miss.
+Self-repo baseline (15 questions covering ingestion, retrieval, RAG, LLM providers and
+MCP; 61 files; `evaluation/` excluded via `.assistantignore`): **Precision@5 0.187,
+Recall@5 0.867, MRR 0.549**. `s01` (the hard case) is still the only complete miss. In
+this documentation-heavy repository, `docs/architecture.md` often ranks above the code it
+describes. That is a good motivation for hybrid search or reranking later.
 
 ### Evaluate answers
 
@@ -373,12 +405,18 @@ ai-developer-assistant/
 │   │   └── answer_generator.py # retrieve -> context -> LLM -> validate citations
 │   ├── ui/
 │   │   └── streamlit_app.py
-│   └── mcp_server/
-│       ├── server.py           # MCPServer + tool registration (stdio)
-│       ├── tools/project_tools.py  # thin wrappers over retrieval/ingestion
-│       ├── schemas.py          # tool input types and output models
-│       ├── security.py         # allowed roots, file checks, untrusted wrapping
-│       └── errors.py           # internal errors -> safe tool errors
+│   ├── mcp_server/
+│   │   ├── server.py           # MCPServer + tool registration (stdio)
+│   │   ├── schemas.py          # tool input types and output models
+│   │   ├── security.py         # allowed roots, file checks, untrusted wrapping
+│   │   ├── errors.py           # internal errors -> safe tool errors
+│   │   └── tools/
+│   │       ├── project_tools.py  # thin wrappers over retrieval/ingestion
+│   │       └── github_tools.py   # GitHub tools: allowlist + untrusted wrapping
+│   └── integrations/
+│       ├── github_client.py    # GET-only httpx client: pagination, rate limits, retries
+│       ├── github_models.py    # normalized repository/issue/PR models
+│       └── github_errors.py
 ├── scripts/
 │   └── mcp_smoke_test.py       # stdio client: list tools, ping, search
 ├── evaluation/
@@ -393,6 +431,7 @@ ai-developer-assistant/
 ├── docs/
 │   ├── architecture.md
 │   ├── mcp.md                  # MCP tools, security model, client setup
+│   ├── github.md               # GitHub token, allowlist, rate limits, tools
 │   └── pending_llm_checks.md   # checks to run once an LLM key is set
 ├── .env.example
 ├── pyproject.toml
@@ -411,6 +450,7 @@ ai-developer-assistant/
 - **Respects `.assistantignore`.** An optional `.assistantignore` at the project root (same syntax as `.gitignore`) excludes files from the assistant only, without changing git. This repository uses it to keep `evaluation/` out of its own index.
 - **Respects `.gitignore`.** Files ignored by the repository's `.gitignore` files (root and nested, including `!` negations) are not indexed. Built-in exclusions still apply to repositories without a `.gitignore`.
 - **MCP is read-only and sandboxed to allowed roots.** MCP tools only work inside `MCP_ALLOWED_PROJECT_ROOTS`, reuse the ingestion file rules, cap output sizes, and return errors without absolute paths, stack traces or secrets.
+- **GitHub is read-only and allowlisted.** The GitHub client can only send GET requests, only to allowlisted repositories, and never sends the token anywhere except the API host. Issue and PR text is treated as untrusted content.
 - **Path containment.** Every file path is resolved and must stay inside the project root, so `../` paths and symlinks pointing outside are rejected.
 
 ## License

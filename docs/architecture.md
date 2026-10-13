@@ -486,3 +486,81 @@ HTTP logs from model downloads to WARNING), so stdout carries only JSON-RPC. A t
 starts `python -m app.mcp_server` as a subprocess, runs initialize, `tools/list`
 and two `tools/call`s, and parses every stdout line as JSON-RPC. Entry points:
 `python -m app.mcp_server` and the `ai-dev-assistant-mcp` script.
+
+## Phase 5: GitHub integration (read-only)
+
+```mermaid
+flowchart LR
+    cli[CLI: github ...] --> policy[resolve_repo<br/>strict owner/name + allowlist]
+    mcp[MCP github_tools.py] --> policy
+    policy --> client[GitHubClient<br/>GET only]
+    client -->|HTTPS + API version header| api[(GitHub REST API)]
+    client --> models[github_models.py<br/>normalized, capped]
+    models --> cli
+    models --> wrap[wrap_untrusted<br/>&lt;untrusted-github-content&gt;] --> mcp
+```
+
+### Layers
+
+- **`app/integrations/github_client.py`**: a small httpx client, with no GitHub
+  wrapper library.
+  - **Headers:** `Accept: application/vnd.github+json`, `X-GitHub-Api-Version:
+    2026-03-10` and a `User-Agent`. `Authorization: Bearer …` is sent only when
+    `GITHUB_TOKEN` is set.
+  - **GET only:** the public methods are `get_repository`, `search_issues`,
+    `get_issue`, `list_pull_requests`, `get_pull_request` and `close`. An httpx
+    `request` event hook raises on any non-GET method before anything is sent.
+    `follow_redirects=False`, so the token never follows a redirect.
+  - **Pagination:** follows `Link: rel="next"` only when the next URL is on the
+    configured API host. It stops at `GITHUB_MAX_PAGES` or the item limit, and
+    sets `truncated`.
+  - **Rate limits:** `x-ratelimit-*` headers become a `RateLimitStatus` (limit,
+    remaining, used, reset time, resource, authenticated) attached to every
+    result. A 403/429 with `remaining: 0`, `retry-after` or a rate-limit message
+    raises `RateLimitError(reset_at, retry_after_seconds)`, with no waiting and
+    no retry loop.
+  - **Retries:** one retry with backoff for timeouts and 5xx only. Connection
+    errors fail immediately.
+  - **Errors** (`github_errors.py`):
+    - 401 → `AuthError`
+    - 403 (not a rate limit) → `ForbiddenError`
+    - 404/410/3xx → `NotFoundError` (which also covers private repositories the
+      token can't see)
+    - 422 → `ValidationError` (with GitHub's scrubbed reason)
+    - 5xx/timeouts → `GitHubUnavailableError`
+
+    The messages are ours: never the token, never raw headers.
+- **`github_models.py`**: normalized Pydantic models (`Repository`,
+  `IssueSearchResult`, `Issue` + `Comment`, `PullRequestList`, `PullRequest` +
+  `PullRequestFile` + `IssueReference`). Bodies are capped at
+  `GITHUB_MAX_BODY_CHARS`, comments at `GITHUB_MAX_COMMENTS`, and every cap has a
+  `*_truncated` flag.
+- **Policy** (`resolve_repo` / `RepoRef.parse`): strict `owner/name` validation,
+  then the allowlist (`GITHUB_ALLOWED_REPOS`, or only `GITHUB_DEFAULT_REPO` when
+  that's empty; "not configured" when both are empty). It runs before any
+  request, and the CLI and MCP tools share it.
+- **`app/mcp_server/tools/github_tools.py`**: calls the same client. It wraps
+  every piece of user-written text (titles, descriptions, bodies, comments) in
+  `<untrusted-github-content>` tags and escapes copies of the tag. Tools are
+  annotated read-only and open-world. `errors.py` turns `GitHubError`s into
+  `ToolError`s. GitHub tools are always registered, so a missing configuration
+  is a tool error and the server still starts.
+
+### Search scoping
+
+`build_search_query` never lets user text change the scope. The text is
+tokenized, and anything that looks like a qualifier (`word:value`), the
+`AND`/`OR`/`NOT` operators, leading `-`, quotes and parentheses are removed. The
+server then appends `repo:owner/name` plus `is:issue`/`is:pr` and
+`state:open`/`state:closed` from the typed parameters. The text is capped at
+GitHub's 256-character limit. As a second check, results whose `repository_url`
+isn't the requested repo are dropped.
+
+### Pull request details
+
+`get_pull_request` combines `GET /pulls/{n}` with paginated `GET /pulls/{n}/files`
+(names, status, additions/deletions, no patch content, at most 300 files).
+`parse_closing_references` extracts issues the body claims to close (`close[sd]`,
+`fix(es|ed)`, `resolve[sd]` followed by `#N`, `owner/repo#N` or an issue URL),
+deduplicated. `get_issue` detects PRs through the `pull_request` key and points
+to `get_pull_request`.

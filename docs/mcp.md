@@ -17,9 +17,10 @@ as a subprocess and exchanges JSON-RPC messages over stdin/stdout.
 ## Tools
 
 All tools are **read-only**. They are annotated `readOnlyHint: true`,
-`destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. The
-server makes no writes, runs no shell commands, executes no code and makes no LLM
-calls. Paths in results are always relative to the project root.
+`destructiveHint: false` and `idempotentHint: true`. Project tools also have
+`openWorldHint: false`, and GitHub tools have `openWorldHint: true` because they read
+an external service. The server makes no writes, runs no shell commands, executes no
+code and makes no LLM calls. Paths in results are always relative to the project root.
 
 | Tool | Purpose |
 |---|---|
@@ -28,6 +29,11 @@ calls. Paths in results are always relative to the project root.
 | `search_project` | Semantic search over an indexed project |
 | `read_project_file` | Read a file with line numbers, optionally a line range |
 | `list_project_files` | Files the indexer would include, plus skip counts |
+| `get_github_repository` | GitHub repository metadata |
+| `search_github_issues` | Search issues/PRs in one allowed repository |
+| `get_github_issue` | One issue with body and first comments |
+| `list_github_pull_requests` | Pull requests in a repository |
+| `get_github_pull_request` | One PR with changed files and closing references |
 
 ### `ping`
 
@@ -77,6 +83,17 @@ calls. Paths in results are always relative to the project root.
   which secret files exist.
 - **Errors:** project outside the allowed roots or not a directory.
 
+### GitHub tools
+
+Inputs, outputs, allowlist behavior, rate limits and the security model for the five
+GitHub tools are in **[github.md](github.md)**. In short:
+- `repo` defaults to `GITHUB_DEFAULT_REPO` and must be on `GITHUB_ALLOWED_REPOS`.
+- Titles, bodies and comments are wrapped in `<untrusted-github-content>`.
+- Every result includes `rate_limit`.
+- Search results are leads to investigate, not proof.
+- Without GitHub configuration these tools return a "not configured" error, and the
+  server still starts.
+
 The exact JSON schemas are published by the server in `tools/list` (input and
 output schemas generated from the Pydantic models in
 [`app/mcp_server/schemas.py`](../app/mcp_server/schemas.py)).
@@ -108,8 +125,9 @@ output schemas generated from the Pydantic models in
    client's `project_path` isn't echoed back), stack traces, SDK messages or
    secrets. Unexpected exceptions become a generic "internal error", and only the
    exception type is logged.
-6. **No side effects.** There are no write, shell, network or LLM tools. The only
-   network access is the one-time download of the embedding model.
+6. **No side effects.** There are no write, shell or LLM tools. Network access is
+   limited to the one-time download of the embedding model and read-only (GET)
+   calls to the GitHub API for allowlisted repositories.
 7. **stdout is protocol only.** Logs go to stderr. A test runs the server as a
    subprocess and checks that every stdout line is a JSON-RPC message.
 
@@ -122,8 +140,11 @@ output schemas generated from the Pydantic models in
 | `MCP_MAX_TOP_K` | `10` | Max `top_k` for `search_project` |
 | `CHROMA_PERSIST_DIR` | `./chroma_db` | Use an **absolute** path in client configs (the client chooses the working directory) |
 
-The server also reads the other settings (embedding model, chunking, exclusions)
-from the environment and from `.env` in its working directory. MCP clients start
+The server also reads the other settings (embedding model, chunking, exclusions,
+`GITHUB_*`) from the environment and from `.env` in its working directory.
+**Keep `GITHUB_TOKEN` in the repository's `.env`, not in client config files.**
+With `uv --directory <repo>`, the server finds it there, so the token never
+appears in a client's JSON. MCP clients start
 servers with a minimal environment, so pass these variables in the client's `env`
 block.
 
@@ -171,7 +192,9 @@ filename is gitignored because it contains your local paths):
       "args": ["--directory", "/ABSOLUTE/PATH/TO/ai-developer-assistant", "run", "python", "-m", "app.mcp_server"],
       "env": {
         "MCP_ALLOWED_PROJECT_ROOTS": "/ABSOLUTE/PATH/TO/projects",
-        "CHROMA_PERSIST_DIR": "/ABSOLUTE/PATH/TO/ai-developer-assistant/chroma_db"
+        "CHROMA_PERSIST_DIR": "/ABSOLUTE/PATH/TO/ai-developer-assistant/chroma_db",
+        "GITHUB_DEFAULT_REPO": "OWNER/REPO",
+        "GITHUB_ALLOWED_REPOS": "OWNER/REPO,OTHER-OWNER/OTHER-REPO"
       }
     }
   }
@@ -201,6 +224,10 @@ npx @modelcontextprotocol/inspector --cli --config mcp-inspector.json --server a
   --method tools/call --tool-name read_project_file \
   --tool-args-json '{"project_path": "/ABSOLUTE/PATH/TO/projects/my-repo", "file_path": ".env"}'
 # -> error: Access to this file is not allowed (sensitive)
+
+npx @modelcontextprotocol/inspector --cli --config mcp-inspector.json --server ai-dev-assistant \
+  --method tools/call --tool-name search_github_issues \
+  --tool-args-json '{"query": "401 unauthorized bearer token", "kind": "any", "limit": 5}' 
 ```
 
 For repeatable runs, pin the Inspector version (`npx --yes @modelcontextprotocol/inspector@<version>`).
@@ -218,7 +245,9 @@ then restart the app:
       "args": ["--directory", "/ABSOLUTE/PATH/TO/ai-developer-assistant", "run", "python", "-m", "app.mcp_server"],
       "env": {
         "MCP_ALLOWED_PROJECT_ROOTS": "/ABSOLUTE/PATH/TO/projects",
-        "CHROMA_PERSIST_DIR": "/ABSOLUTE/PATH/TO/ai-developer-assistant/chroma_db"
+        "CHROMA_PERSIST_DIR": "/ABSOLUTE/PATH/TO/ai-developer-assistant/chroma_db",
+        "GITHUB_DEFAULT_REPO": "OWNER/REPO",
+        "GITHUB_ALLOWED_REPOS": "OWNER/REPO,OTHER-OWNER/OTHER-REPO"
       }
     }
   }
@@ -240,7 +269,9 @@ all projects):
       "args": ["--directory", "/ABSOLUTE/PATH/TO/ai-developer-assistant", "run", "python", "-m", "app.mcp_server"],
       "env": {
         "MCP_ALLOWED_PROJECT_ROOTS": "/ABSOLUTE/PATH/TO/projects",
-        "CHROMA_PERSIST_DIR": "/ABSOLUTE/PATH/TO/ai-developer-assistant/chroma_db"
+        "CHROMA_PERSIST_DIR": "/ABSOLUTE/PATH/TO/ai-developer-assistant/chroma_db",
+        "GITHUB_DEFAULT_REPO": "OWNER/REPO",
+        "GITHUB_ALLOWED_REPOS": "OWNER/REPO,OTHER-OWNER/OTHER-REPO"
       }
     }
   }
