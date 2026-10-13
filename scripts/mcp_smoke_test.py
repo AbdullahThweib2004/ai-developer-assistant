@@ -2,13 +2,17 @@
 
 Usage (from the repository root, after indexing this repository):
     uv run python -m app.cli index --path . --rebuild
-    uv run python scripts/mcp_smoke_test.py ["your search query"]
+    uv run python scripts/mcp_smoke_test.py ["project query"] [--github-repo owner/name] [--github-query "..."]
+
+GitHub calls are read-only and work without a token (the server reads
+GITHUB_TOKEN from .env when it's set).
 
 The server runs as a subprocess, exactly as an MCP client (Inspector, Claude
 Desktop, Cursor) would start it. Only the variables passed in ``env`` (plus a
 minimal allow-list) reach it, so the allowed root and index location are set here.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -19,7 +23,22 @@ from mcp import Client, StdioServerParameters
 REPO = Path(__file__).resolve().parents[1]
 
 
-async def main(query: str) -> None:
+def text_of(result) -> str:  # type: ignore[no-untyped-def]
+    return " ".join(getattr(c, "text", "") for c in result.content)
+
+
+def unwrap(text: str) -> str:
+    """Strip the untrusted-content wrapper tags for display."""
+    return text.split("\n", 1)[1].rsplit("\n", 1)[0] if text.startswith("<untrusted-") else text
+
+
+def rate(data: dict) -> str:
+    r = data.get("rate_limit") or {}
+    auth = "token" if r.get("authenticated") else "no token"
+    return f"rate limit ({r.get('resource')}): {r.get('remaining')}/{r.get('limit')} remaining ({auth})"
+
+
+async def main(query: str, github_repo: str, github_query: str) -> None:
     server = StdioServerParameters(
         command=sys.executable,
         args=["-m", "app.mcp_server"],
@@ -27,6 +46,8 @@ async def main(query: str) -> None:
         env={
             "MCP_ALLOWED_PROJECT_ROOTS": str(REPO),
             "CHROMA_PERSIST_DIR": str(REPO / "chroma_db"),
+            "GITHUB_ALLOWED_REPOS": github_repo,
+            "GITHUB_DEFAULT_REPO": github_repo,
         },
     )
     async with Client(server) as client:
@@ -43,7 +64,7 @@ async def main(query: str) -> None:
             "search_project", {"project_path": str(REPO), "query": query, "top_k": 3}
         )
         if result.is_error:
-            print("\nsearch_project error:", " ".join(getattr(c, "text", "") for c in result.content))
+            print("\nsearch_project error:", text_of(result))
             return
         data = result.structured_content
         print(f"\nsearch_project({query!r}) -> {len(data['hits'])} hits")
@@ -54,6 +75,34 @@ async def main(query: str) -> None:
                   f"(chunk {hit['chunk_index']}, {hit['location']})\n     {preview}...")
         print(f"\nnote: {data['note']}")
 
+        repo = await client.call_tool("get_github_repository", {"repo": github_repo})
+        if repo.is_error:
+            print(f"\nget_github_repository error: {text_of(repo)}")
+            return
+        r = repo.structured_content
+        print(f"\nget_github_repository({github_repo}) -> {r['full_name']}: {r['stars']} stars, "
+              f"{r['open_issues_count']} open issues+PRs, default branch {r['default_branch']}")
+        print(f"  {rate(r)}")
+
+        found = await client.call_tool(
+            "search_github_issues", {"repo": github_repo, "query": github_query, "kind": "any", "limit": 5}
+        )
+        if found.is_error:
+            print(f"\nsearch_github_issues error: {text_of(found)}")
+            return
+        f = found.structured_content
+        print(f"\nsearch_github_issues({github_query!r}) -> {f['total_count']} matches, showing {len(f['items'])}")
+        print(f"  query sent: {f['query']}")
+        for item in f["items"]:
+            kind = "PR" if item["is_pull_request"] else "issue"
+            print(f"  #{item['number']} [{kind}, {item['state']}] {unwrap(item['title'])}")
+        print(f"  {rate(f)}")
+
 
 if __name__ == "__main__":
-    anyio.run(main, sys.argv[1] if len(sys.argv) > 1 else "How does the chunker avoid infinite loops?")
+    parser = argparse.ArgumentParser(description="MCP stdio smoke test")
+    parser.add_argument("query", nargs="?", default="How does the chunker avoid infinite loops?")
+    parser.add_argument("--github-repo", default="fastapi/fastapi")
+    parser.add_argument("--github-query", default="401 unauthorized bearer token")
+    args = parser.parse_args()
+    anyio.run(main, args.query, args.github_repo, args.github_query)
