@@ -6,8 +6,8 @@ repository's code and documentation, answers questions using the retrieved code 
 cited context, and helps investigate errors. Through an MCP server it works with GitHub
 issues and pull requests, and any write action needs explicit human approval.
 
-> **Status:** Phase 1 (ingestion and chunking) is complete. Phase 2 (embeddings and
-> vector search) is in progress.
+> **Status:** Phases 1–2 are complete: repositories can be ingested, embedded into
+> Chroma and searched semantically. Phase 3 (RAG question answering) is next.
 
 ## Key features (planned)
 
@@ -22,7 +22,7 @@ issues and pull requests, and any write action needs explicit human approval.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Ingestion & chunking | ✅ Done |
-| 2 | Embeddings & vector search | 🚧 In progress |
+| 2 | Embeddings & vector search | ✅ Done |
 | 3 | RAG question answering | Planned |
 | 4 | MCP server | Planned |
 | 5 | GitHub integration | Planned |
@@ -62,8 +62,10 @@ See [docs/architecture.md](docs/architecture.md) for the detailed design.
 - **pydantic / pydantic-settings**: data models and configuration
 - **PyMuPDF**: PDF text extraction
 - **PyYAML**: safe YAML validation
+- **sentence-transformers** (`all-MiniLM-L6-v2`): local embeddings
+- **Chroma**: persistent vector store (cosine similarity)
 - **pytest**: tests
-- Planned: **Chroma** (vector store), **sentence-transformers** (embeddings), an LLM API, the **MCP** Python SDK, **Streamlit** (UI)
+- Planned: an LLM API, the **MCP** Python SDK, **Streamlit** (UI)
 
 ## Getting started
 
@@ -98,8 +100,17 @@ cp .env.example .env
 | `SUPPORTED_EXTENSIONS` | `.md .txt .py .json .yaml .yml .pdf` | JSON array to override |
 | `EXCLUDED_DIRS` | `.git`, `.venv`, `node_modules`, `*.egg-info`, ... | Directory names or globs |
 | `EXCLUDED_FILE_PATTERNS` | `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `*secret*`, `*credentials*`, `*.p12` | Sensitive files that are never read |
+| `EMBEDDING_PROVIDER` | `sentence_transformers` | Embedding backend (`fake` is for tests only) |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model name; stored with the index |
+| `EMBEDDING_BATCH_SIZE` | `32` | Chunks embedded per batch |
+| `CHROMA_PERSIST_DIR` | `./chroma_db` | Where the vector index is stored (gitignored) |
+| `CHROMA_COLLECTION_PREFIX` | `project` | Collections are named `<prefix>_<project_name>` |
+| `RETRIEVAL_TOP_K` | `5` | Default number of search results |
+| `RETRIEVAL_MIN_SCORE` | `0.0` | Minimum similarity (0–1) for a result |
 
 ### Run the CLI
+
+**Ingestion** (no embeddings, quick to run):
 
 ```bash
 # Ingest a repository and print a summary
@@ -128,11 +139,56 @@ Total chunks:            5
   - yaml                   1
 ```
 
+**Indexing and search** (the embedding model is downloaded on first use):
+
+```bash
+# Embed a repository into Chroma (use --rebuild to replace an existing index)
+uv run python -m app.cli index --path ./some/repo --rebuild
+
+# Semantic search: rank, score, file, chunk and a preview
+uv run python -m app.cli search --path ./some/repo "How are passwords verified?" --top-k 5
+uv run python -m app.cli search --path ./some/repo "database settings" --type yaml
+
+# What is indexed for a repository
+uv run python -m app.cli stats --path ./some/repo
+```
+
+Example search output:
+
+```
+1. [0.621] app/ingestion/chunker.py (chunk 2)
+   his means the progress rule is broken. max_iterations = length + 1 while start < length: ...
+```
+
 ### Run the tests
 
 ```bash
-uv run pytest
+uv run pytest            # fast suite: fake embeddings, temp Chroma dirs, no network
+uv run pytest -m slow    # also downloads and tests the real embedding model
 ```
+
+### Evaluate retrieval
+
+```bash
+uv run python evaluation/evaluate_retrieval.py
+```
+
+This indexes `tests/fixtures/sample_project` with the configured model and runs the
+questions in [`evaluation/questions.json`](evaluation/questions.json). It reports
+file-level Precision@5, Recall@5 and MRR and saves the results to
+`evaluation/results/` (gitignored).
+
+**Baseline** (`all-MiniLM-L6-v2`, chunk size 1000 / overlap 150, 12 questions, 8 files):
+
+| Metric | Score |
+|---|---|
+| Precision@5 | 0.250 |
+| Recall@5 | 1.000 |
+| MRR | 0.958 |
+
+Each question has only 1–2 relevant files, so Precision@5 can't go above 0.2–0.4.
+The fixture is small, so these numbers are a regression baseline, not a measure of
+real-world quality.
 
 ## Project structure
 
@@ -141,12 +197,20 @@ ai-developer-assistant/
 ├── app/
 │   ├── config.py               # settings (pydantic-settings, .env)
 │   ├── cli.py                  # command-line interface
-│   └── ingestion/
-│       ├── models.py           # Document, Chunk, SkippedFile, SkipReason
-│       ├── file_loader.py      # safe file discovery
-│       ├── document_parser.py  # text / PDF / JSON / YAML parsing
-│       ├── chunker.py          # Chunker protocol + CharacterChunker
-│       └── pipeline.py         # discover -> parse -> chunk
+│   ├── ingestion/
+│   │   ├── models.py           # Document, Chunk, SkippedFile, SkipReason
+│   │   ├── file_loader.py      # safe file discovery
+│   │   ├── document_parser.py  # text / PDF / JSON / YAML parsing
+│   │   ├── chunker.py          # Chunker protocol + CharacterChunker
+│   │   └── pipeline.py         # discover -> parse -> chunk
+│   └── retrieval/
+│       ├── embeddings.py       # EmbeddingProvider protocol, sentence-transformers, fake
+│       ├── vector_store.py     # Chroma wrapper (one collection per project)
+│       ├── indexer.py          # pipeline -> embeddings -> Chroma
+│       └── retriever.py        # query -> ranked chunks
+├── evaluation/
+│   ├── questions.json          # retrieval questions with relevant files
+│   └── evaluate_retrieval.py   # Precision@k, Recall@k, MRR
 ├── tests/
 │   ├── fixtures/sample_project/  # small fake repository used by tests
 │   └── test_*.py

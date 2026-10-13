@@ -128,3 +128,119 @@ document title and, for PDFs, the page numbers the chunk overlaps.
 
 `file_path` is always relative to the project root and uses forward slashes, so
 IDs don't depend on where the repository is checked out.
+
+## Phase 2: Embeddings, vector store & retrieval
+
+Phase 2 turns chunks into vectors, stores them in Chroma and answers semantic
+search queries. It reuses the Phase 1 pipeline unchanged.
+
+```
+build_index(project)                          Retriever.search(query)
+   │                                              │
+   ▼                                              ▼
+run_pipeline() ─► chunks                      validate query / top_k
+   │                                              │
+   ▼                                              ▼
+provider.embed_documents() (batched)          build where-filter (file types)
+   │                                              │
+   ▼                                              ▼
+ChromaVectorStore.upsert_chunks()             provider.embed_query() ─► store.query()
+                                                  │
+                                                  ▼
+                                              drop score < min_score ─► rank ─► RetrievedChunk[]
+```
+
+### Embedding providers
+
+[`embeddings.py`](../app/retrieval/embeddings.py) defines an `EmbeddingProvider`
+protocol with `name`, `dimension`, `embed_documents(texts)` and `embed_query(text)`.
+All providers return L2-normalized vectors.
+
+- **`SentenceTransformerProvider`**: local `sentence-transformers` model
+  (default `all-MiniLM-L6-v2`, 384 dimensions). The model and torch are loaded
+  lazily on first use, so commands like `stats` stay fast. Encoding is batched
+  (`EMBEDDING_BATCH_SIZE`).
+- **`FakeEmbeddingProvider`**: deterministic hashed bag-of-words for tests. Each
+  token adds to a bucket chosen by its SHA-256, and the vector is normalized. Texts
+  that share words get similar vectors, so ranking can be tested with no downloads.
+- **`get_embedding_provider(settings)`** picks one based on `EMBEDDING_PROVIDER`.
+  A hosted embedding API can be added here as another branch.
+
+### Vector store
+
+[`vector_store.py`](../app/retrieval/vector_store.py) wraps
+`chromadb.PersistentClient` (telemetry disabled), with one collection per project:
+
+- **Name:** `<CHROMA_COLLECTION_PREFIX>_<safe_project_name>`, lowercased and
+  sanitized to `[a-z0-9_-]`, at most 63 characters. The project name is the
+  repository's directory name.
+- **Space:** cosine (`hnsw:space = "cosine"`). Similarity is computed as
+  `1 - cosine distance`.
+- **Records:** id = `chunk_id`, document = chunk content, plus metadata:
+  `document_id`, `file_path`, `file_type`, `project_name`, `chunk_index`,
+  `start_char`, `end_char`, `title`, and for PDFs `pages` (as `"2,3"`),
+  `page_start` and `page_end`.
+- **Metadata flattening:** Chroma only accepts str/int/float/bool. `None` is
+  dropped, datetimes become ISO strings, scalar lists become comma-separated
+  strings, and anything else becomes JSON text.
+- **Model guard:** the collection metadata records `embedding_model`. Adding or
+  querying with a different model raises `EmbeddingModelMismatchError`, which
+  tells the user to rebuild. Vectors from different models are not comparable,
+  so mixing them would silently return nonsense.
+- **Missing collection:** raises `ProjectNotIndexedError` ("Project is not
+  indexed... run index") instead of creating an empty one.
+- **Inspect-only mode:** opening a store with `embedding_model=None` lets the
+  store read counts, files and the stored model without loading a model (used by
+  `stats`). In this mode the store refuses to write or query.
+
+### Indexer
+
+[`indexer.py`](../app/retrieval/indexer.py) runs `build_index(project_path, rebuild=True)`:
+
+1. With `rebuild=True`, delete the project's collection. With `rebuild=False`,
+   refuse if a non-empty index already exists (`IndexExistsError`).
+2. Run the Phase 1 pipeline.
+3. Embed chunks in batches and upsert each batch.
+4. Return an `IndexReport`: collection, model, files indexed or skipped, chunks
+   indexed, chunks per file type, duration.
+
+Only full rebuilds are supported for now, which keeps the index exactly in sync
+with the files on disk. Each chunk already stores its file's `file_modified_at` and
+`file_content_hash` (SHA-256 of the parsed content), so incremental indexing can
+later re-embed only changed files and delete chunks of removed files. Chunk
+contents are never logged.
+
+### Retriever
+
+[`retriever.py`](../app/retrieval/retriever.py) has
+`Retriever.search(query, top_k=None, min_score=None, file_types=None)`, which runs
+as a series of small steps:
+
+1. **Validate:** an empty or whitespace query, or `top_k <= 0`, raises
+   `InvalidQueryError`.
+2. **Check the index exists:** raises `ProjectNotIndexedError` before any model
+   is loaded.
+3. **Filter:** `file_types` becomes a Chroma `where` clause:
+   `{"file_type": {"$in": [...]}}`.
+4. **Vector search:** embed the query and ask Chroma for the `top_k` nearest chunks.
+5. **Threshold:** drop hits with `score < min_score`.
+6. **Rank:** sort by score, descending, and return `RetrievedChunk` objects
+   (`chunk_id`, `content`, `file_path`, `file_type`, `score`, `chunk_index`,
+   `start_char`, `end_char`, `metadata`).
+
+Hybrid search (e.g. BM25 merged with vector hits) and reranking can be added later
+as extra steps between 4 and 6 without changing callers.
+
+### Evaluation
+
+[`evaluation/evaluate_retrieval.py`](../evaluation/evaluate_retrieval.py) measures
+retrieval at the **file level**. For each question it fetches `4 × k` chunks,
+collapses them into a ranked list of distinct files, keeps the top `k`, and compares
+them with the question's `relevant_files`:
+
+- Precision@k = relevant files in top k / k
+- Recall@k = relevant files in top k / number of relevant files
+- MRR = mean of 1 / rank of the first relevant file
+
+Results are saved to `evaluation/results/retrieval_<timestamp>.json` (gitignored).
+They record the project name, never absolute paths.
