@@ -2,8 +2,13 @@
 
 Run with:  uv run streamlit run app/ui/streamlit_app.py
 
-The UI only gathers input and renders results; indexing, retrieval and answer
-generation all go through the same functions the CLI uses.
+The UI only gathers input and renders results; indexing, retrieval, answer
+generation and investigations all go through the same functions the CLI uses.
+
+Tabs:
+- Quick answer: one retrieval + one LLM call (Phase 3 answer generator).
+- Investigate: multi-turn investigations with project and GitHub tools, run
+  through a real MCP session (Phase 6 orchestrator).
 """
 
 from pathlib import Path
@@ -11,7 +16,19 @@ from pathlib import Path
 import streamlit as st
 
 from app.config import Settings, get_settings
+from app.integrations.github_client import resolve_repo
+from app.integrations.github_errors import GitHubError
 from app.llm.base import LLMError
+from app.orchestration.assistant import (
+    EvidenceSource,
+    InvestigationResult,
+    Investigator,
+    OrchestrationConfigError,
+    SessionConfig,
+    build_tool_llm,
+    unwrap_untrusted,
+)
+from app.orchestration.tool_backends import MCPClientBackend
 from app.rag.answer_generator import Answer, AnswerGenerator
 from app.retrieval.embeddings import EmbeddingProvider, get_embedding_provider
 from app.retrieval.indexer import IndexStats, build_index, index_stats
@@ -123,17 +140,8 @@ def render_answer(answer: Answer) -> None:
     )
 
 
-def main() -> None:
-    try:
-        settings = get_settings()
-    except ValueError as exc:
-        st.error(f"Invalid configuration: {exc}")
-        st.stop()
-
-    project, top_k, file_types = sidebar(settings)
-
-    st.title("AI Developer Assistant")
-    st.caption("Ask questions about the indexed project. Answers cite the project files they rely on.")
+def quick_answer_tab(settings: Settings, project: Path, top_k: int, file_types: list[str]) -> None:
+    st.caption("One retrieval step and one LLM call. Answers cite the project files they rely on.")
     with st.form("ask"):
         question = st.text_area("Question", placeholder="How does authentication work?")
         submitted = st.form_submit_button("Ask")
@@ -150,6 +158,142 @@ def main() -> None:
         st.error(str(exc))
     else:
         render_answer(answer)
+
+
+# ---- Investigate tab --------------------------------------------------------------------------
+
+
+def _close_investigation() -> None:
+    current = st.session_state.pop("investigation", None)
+    if current:
+        current["backend"].close()
+
+
+def get_investigator(settings: Settings, project: Path, repo: str | None, mode: str) -> Investigator:
+    """One investigator (and MCP server process) per session configuration, kept across reruns."""
+    key = (str(project), repo, mode)
+    current = st.session_state.get("investigation")
+    if current and current["key"] == key:
+        return current["investigator"]
+    _close_investigation()
+    st.session_state["turns"] = []
+    llm = build_tool_llm(settings)
+    with st.spinner("Starting the MCP tool server..."):
+        backend = MCPClientBackend(settings, project)
+    try:
+        investigator = Investigator(settings, llm, backend, SessionConfig(project_path=project, repo=repo, mode=mode))
+    except Exception:
+        backend.close()
+        raise
+    st.session_state["investigation"] = {"key": key, "investigator": investigator, "backend": backend}
+    return investigator
+
+
+def render_sources(title: str, sources: list[EvidenceSource]) -> None:
+    cited = [s for s in sources if s.cited]
+    with st.expander(f"{title} ({len(cited)} cited of {len(sources)} found)", expanded=bool(cited)):
+        if not sources:
+            st.caption("None.")
+        for src in sources:
+            mark = "" if src.cited else " · *not cited*"
+            if src.kind == "project":
+                score = f" · score {src.score:.3f}" if src.score is not None else ""
+                st.markdown(f"**[{src.cite_id}]** `{src.file_path}` ({src.location}){score}{mark}")
+            else:
+                kind = "PR" if src.is_pull_request else "Issue"
+                label = unwrap_untrusted(src.label)  # display only; still untrusted text
+                st.markdown(f"**[{src.cite_id}]** {kind} [{label}]({src.url}){mark}")
+
+
+def render_investigation(result: InvestigationResult) -> None:
+    if result.limits_hit:
+        st.warning(f"Limits reached: {', '.join(result.limits_hit)}. The answer uses the evidence gathered so far.")
+    if result.github_disabled:
+        st.warning("GitHub was rate limited, so further GitHub calls were skipped for this question.")
+    st.markdown(result.answer_text)
+    if result.invalid_citations:
+        st.error("Invalid citations (not returned by any tool): "
+                 + ", ".join(f"`[{c}]`" for c in result.invalid_citations))
+    col1, col2 = st.columns(2)
+    with col1:
+        render_sources("Project sources", result.project_sources)
+    with col2:
+        render_sources("GitHub sources", result.github_sources)
+    with st.expander("Investigation trace"):
+        for t in result.trace:
+            if t.kind == "llm":
+                st.markdown(f"`{t.step}` LLM ({t.status}) · {t.duration_ms / 1000:.1f}s · "
+                            f"tokens {t.input_tokens}/{t.output_tokens}")
+            else:
+                err = f" · **{t.error_category}**" if t.error_category else ""
+                st.markdown(f"`{t.step}` tool `{t.name}` · {t.status} · {t.duration_ms / 1000:.2f}s · "
+                            f"args `{t.args}`{err}")
+    lat = result.latency
+    st.caption(f"{result.tool_calls} tool calls ({result.cached_calls} cached, {result.rejected_calls} rejected) · "
+               f"{result.llm_calls} LLM calls · tokens {result.input_tokens} in / {result.output_tokens} out · "
+               f"total {lat.total_ms / 1000:.1f}s · `{result.model}` · prompt `{result.prompt_version}`")
+
+
+def investigate_tab(settings: Settings, project: Path) -> None:
+    st.caption("Multi-turn investigations. The assistant decides whether to search the project, GitHub, both or "
+               "neither, using read-only tools through the MCP server.")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    mode = col1.selectbox("Mode", ["auto", "project", "github"])
+    repo_input = col2.text_input("GitHub repository (owner/name)", value=settings.github_default_repo or "",
+                                 help="Must be on GITHUB_ALLOWED_REPOS. Leave empty for project-only.")
+    if col3.button("New conversation", width="stretch"):
+        _close_investigation()
+        st.session_state["turns"] = []
+
+    repo = repo_input.strip() or None
+    if repo and mode != "project":
+        try:
+            resolve_repo(settings, repo)
+        except GitHubError as exc:
+            st.error(str(exc))
+            return
+
+    current = st.session_state.get("investigation")
+    if current and current["key"] != (str(project), repo, mode):
+        st.info("Settings changed: the next question starts a new conversation.")
+
+    for turn in st.session_state.get("turns", []):
+        with st.chat_message("user"):
+            st.markdown(turn.question)
+        with st.chat_message("assistant"):
+            render_investigation(turn)
+
+    question = st.chat_input("Ask about the project or its GitHub issues...")
+    if not question:
+        return
+    with st.chat_message("user"):
+        st.markdown(question)
+    with st.chat_message("assistant"):
+        try:
+            investigator = get_investigator(settings, project, repo, mode)  # started on first use
+            with st.spinner("Investigating..."):
+                result = investigator.ask(question)
+        except (LLMError, OrchestrationConfigError, GitHubError) as exc:
+            st.error(str(exc))
+            return
+        render_investigation(result)
+    st.session_state.setdefault("turns", []).append(result)
+
+
+def main() -> None:
+    try:
+        settings = get_settings()
+    except ValueError as exc:
+        st.error(f"Invalid configuration: {exc}")
+        st.stop()
+
+    project, top_k, file_types = sidebar(settings)
+    st.title("AI Developer Assistant")
+    quick, investigate = st.tabs(["Quick answer", "Investigate"])
+    with quick:
+        quick_answer_tab(settings, project, top_k, file_types)
+    with investigate:
+        investigate_tab(settings.model_copy(update={"project_root": project}), project)
 
 
 main()
