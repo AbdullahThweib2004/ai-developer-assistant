@@ -13,11 +13,11 @@ from app.integrations.github_client import GitHubClient
 from app.mcp_server.security import GITHUB_UNTRUSTED_TAG
 from app.mcp_server.server import create_server
 from app.retrieval.embeddings import FakeEmbeddingProvider
-from tests.helpers import GitHubMock, github_fixture
+from tests.helpers import GH_PAT, GitHubMock, github_fixture
 
 pytestmark = pytest.mark.anyio
 
-TOKEN = "github_pat_TOOLS_DO_NOT_LEAK_987654321"
+TOKEN = GH_PAT + "TOOLS_DO_NOT_LEAK_987654321"
 BASE = "/repos/octo-org/demo"
 GITHUB_TOOLS = {"get_github_repository", "search_github_issues", "get_github_issue",
                 "list_github_pull_requests", "get_github_pull_request"}

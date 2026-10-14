@@ -6,6 +6,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from app.config import Settings
+from app.orchestration.prompts import ORCH_PROMPT_VERSION
 
 APP = str(Path(__file__).parents[1] / "app" / "ui" / "streamlit_app.py")
 
@@ -62,7 +63,7 @@ def test_investigate_tab_runs_through_mcp(ui_env: Settings, monkeypatch: pytest.
     at.chat_input[0].set_value("What does this project do?").run()
     assert not at.exception
     assert any("No further steps were scripted" in m.value for m in at.main.markdown)
-    assert any("prompt `orch-v1`" in c.value for c in at.main.caption)
+    assert any(f"prompt `{ORCH_PROMPT_VERSION}`" in c.value for c in at.main.caption)
     assert at.session_state["turns"][0].question == "What does this project do?"
     at.session_state["investigation"]["backend"].close()
 

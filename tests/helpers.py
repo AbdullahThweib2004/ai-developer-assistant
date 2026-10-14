@@ -73,3 +73,47 @@ class GitHubMock:
             raise spec
         status, body, headers = spec
         return httpx.Response(status, json=body, headers={**self.RATE_HEADERS, **(headers or {})})
+
+
+# ---- GitHub write mocks (Phase 7) ------------------------------------------------------
+
+# Fake token prefixes are assembled from parts so the literal prefixes never appear in the repo
+# (a plain grep for real-looking credentials stays clean).
+GHP = "gh" + "p_"
+GH_PAT = "github" + "_pat_"
+SK_OR = "sk-" + "or-"
+READ_TOKEN = GHP + "READtokenFORtestsONLY0123456789abcdef"
+WRITE_TOKEN = GH_PAT + "WRITEtokenFORtestsONLY_0123456789abcdefABCDEF0123456789"
+SANDBOX = "octo-org/sandbox"
+
+
+def write_settings(root: Path, **overrides: object) -> Settings:
+    """Settings with writing enabled for the sandbox repo only (tests)."""
+    from pydantic import SecretStr
+
+    defaults: dict[str, object] = {
+        "github_token": SecretStr(READ_TOKEN),
+        "github_write_token": SecretStr(WRITE_TOKEN),
+        "github_write_enabled": True,
+        "github_write_allowed_repos": SANDBOX,
+        "github_default_repo": "octo-org/demo",
+        "github_allowed_repos": f"octo-org/demo,{SANDBOX}",
+        "audit_log_path": root / "audit" / "github_writes.jsonl",
+    }
+    return make_settings(root, **{**defaults, **overrides})
+
+
+def issues_endpoint(created: dict | None = None, listing: list | None = None, post_status: int = 201,
+                    post_body: dict | None = None, post_error: Exception | None = None):  # type: ignore[no-untyped-def]
+    """A route for /repos/{sandbox}/issues: POST creates, GET lists."""
+
+    def serve(request):  # type: ignore[no-untyped-def]
+        if request.method == "POST":
+            if post_error is not None:
+                raise post_error
+            body = post_body if post_body is not None else (created or {
+                "number": 7, "html_url": f"https://github.com/{SANDBOX}/issues/7"})
+            return post_status, body, {}
+        return 200, listing or [], {}
+
+    return serve

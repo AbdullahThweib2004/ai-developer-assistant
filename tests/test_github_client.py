@@ -29,9 +29,9 @@ from app.integrations.github_errors import (
     RepoNotAllowedError,
     ValidationError,
 )
-from tests.helpers import GitHubMock, github_fixture, make_settings
+from tests.helpers import GH_PAT, GitHubMock, github_fixture, make_settings
 
-TOKEN = "github_pat_TEST_DO_NOT_LEAK_0123456789"
+TOKEN = GH_PAT + "TEST_DO_NOT_LEAK_0123456789"
 REPO = RepoRef("octo-org", "demo")
 BASE = "/repos/octo-org/demo"
 
@@ -98,7 +98,7 @@ def test_redact_headers() -> None:
 
 def test_client_has_no_write_methods() -> None:
     public = [name for name, _ in inspect.getmembers(GitHubClient, inspect.isfunction) if not name.startswith("_")]
-    assert set(public) == {"get_repository", "search_issues", "get_issue", "list_pull_requests",
+    assert set(public) == {"get_repository", "search_issues", "get_issue", "list_issues", "list_pull_requests",
                            "get_pull_request", "close"}
     write_words = ("post", "patch", "put", "delete", "create", "update", "edit", "comment", "label", "merge")
     for name, _ in inspect.getmembers(GitHubClient, inspect.isfunction):
