@@ -22,9 +22,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.actions.issue_draft import EvidenceRef, IssueDraft, build_draft
 from app.config import Settings
 from app.integrations.github_client import resolve_repo
-from app.integrations.github_errors import GitHubNotConfiguredError
+from app.integrations.github_errors import GitHubError, GitHubNotConfiguredError
+from app.integrations.github_write_client import resolve_write_repo
 from app.llm.base import ChatMessage, LLMToolsUnsupportedError, ToolCall, ToolCallingLLM, ToolSpec
 from app.llm.factory import get_llm_provider
 from app.orchestration.prompts import (
@@ -45,6 +47,32 @@ GITHUB_TOOLS = frozenset({
     "list_github_pull_requests", "get_github_pull_request",
 })
 INJECTED_ARGS = frozenset({"project_path", "repo"})
+# The ONLY action-related tool the model ever gets. It drafts; it never creates anything.
+PREPARE_ISSUE_TOOL = "prepare_github_issue"
+PREPARE_ISSUE_SPEC = ToolSpec(
+    name=PREPARE_ISSUE_TOOL,
+    description=(
+        "Prepare a DRAFT GitHub issue from your findings for the user to review. This does NOT create an issue: "
+        "the user reviews, edits, and approves or cancels the draft in the app. Call it at most once, after "
+        "investigating, and only because the user asked for an issue to be proposed. Returns a draft id."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Short, specific title."},
+            "summary": {"type": "string", "description": "What is wrong and why, citing evidence ids like [S1]."},
+            "steps_to_reproduce": {"type": "array", "items": {"type": "string"}},
+            "expected_behavior": {"type": "string"},
+            "actual_behavior": {"type": "string"},
+            "error_messages": {"type": "string", "description": "Exact error text, if any (no secrets)."},
+            "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^[SG][0-9]+$"},
+                             "description": "S#/G# ids from tool results that support the issue."},
+            "investigation_steps": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["title", "summary"],
+        "additionalProperties": False,
+    },
+)
 MAX_RESULT_CHARS = 20_000  # tool result text sent to the model
 MEMORY_ANSWER_CHARS = 1500  # how much of a previous answer is kept as context
 _CITATION_GROUP = re.compile(r"\[\s*([SG]\d+(?:\s*[,;]\s*[SG]\d+)*)\s*\]")
@@ -61,6 +89,8 @@ class SessionConfig(BaseModel):
     project_path: Path
     repo: str | None = None
     mode: Mode = "auto"
+    # Set only when the user explicitly asked for an issue to be proposed (e.g. --propose-issue).
+    issue_repo: str | None = None
 
 
 class EvidenceSource(BaseModel):
@@ -123,6 +153,7 @@ class InvestigationResult(BaseModel):
     output_tokens: int = 0
     latency: Latency = Field(default_factory=Latency)
     trace: list[TraceStep] = Field(default_factory=list)
+    issue_draft: IssueDraft | None = None  # a draft for human review; never created automatically
 
     @property
     def cited_sources(self) -> list[EvidenceSource]:
@@ -174,6 +205,7 @@ class _Run:
         self.sources: dict[str, EvidenceSource] = {}
         self.source_keys: dict[tuple[str, ...], str] = {}
         self.counters = {"S": 0, "G": 0}
+        self.issue_draft: IssueDraft | None = None
         self.llm_calls = 0
         self.input_tokens = 0
         self.output_tokens = 0
@@ -207,8 +239,12 @@ class Investigator:
         self.mode: Mode = session.mode
         self.repo = self._resolve_session_repo(session)
         self.history: deque[tuple[str, str]] = deque(maxlen=settings.orch_memory_turns)
+        self.issue_repo = self._resolve_issue_repo(session.issue_repo)
+        self.drafts: dict[str, IssueDraft] = {}  # session drafts awaiting human review
         self._definitions = {d.name: d for d in backend.list_tools()}
         self.tools = self._visible_tools()
+        if self.issue_repo:
+            self.tools.append(PREPARE_ISSUE_SPEC)
         self._allowed_args = {t.name: set(t.parameters.get("properties", {})) for t in self.tools}
         self._required_args = {t.name: set(t.parameters.get("required", [])) for t in self.tools}
 
@@ -226,6 +262,14 @@ class Investigator:
             return resolve_repo(self.settings, candidate).full_name  # validates format + allowlist
         except GitHubNotConfiguredError as exc:
             raise OrchestrationConfigError(str(exc)) from None
+
+    def _resolve_issue_repo(self, issue_repo: str | None) -> str | None:
+        if not issue_repo:
+            return None
+        try:
+            return resolve_write_repo(self.settings, issue_repo).full_name
+        except GitHubError as exc:
+            raise OrchestrationConfigError(f"Can't propose issues: {exc}") from None
 
     def _visible_tools(self) -> list[ToolSpec]:
         """Read-only tools for the mode, with session-owned arguments removed from their schemas."""
@@ -267,6 +311,7 @@ class Investigator:
         system = build_system_prompt(
             self.project.name, self.repo, self.mode, self._tool_groups(), self.settings.orch_max_tool_calls,
             self.settings.orch_max_github_calls if self.repo else 0, self.settings.orch_max_iterations,
+            issue_repo=self.issue_repo,
         )
         messages = [ChatMessage(role="user", content=build_user_message(question, list(self.history)))]
         final_text: str | None = None
@@ -338,6 +383,9 @@ class Investigator:
         if missing:
             return reject(f"Missing required arguments: {', '.join(sorted(missing))}.", "invalid_arguments")
 
+        if call.name == PREPARE_ISSUE_TOOL:
+            return self._prepare_issue(run, iteration, call, reply, reject)
+
         # 2. Inject session-owned arguments (the model can't choose them).
         args = dict(call.arguments)
         schema_props = self._definitions[call.name].input_schema.get("properties", {})
@@ -393,6 +441,47 @@ class Investigator:
                       args=self._sanitize(call.arguments), duration_ms=round(elapsed, 1),
                       result_chars=len(content), error_category=category)
         return ChatMessage(role="tool", tool_call_id=call.id, content=content, is_error=True)
+
+    def _prepare_issue(self, run: _Run, iteration: int, call: ToolCall, reply: Any, reject: Any) -> ChatMessage:
+        """Build and validate a draft. Creates nothing; the human decides in the app."""
+        if run.issue_draft is not None:
+            return reject("A draft was already prepared for this question.", "limit_reached")
+        if run.executed >= self.settings.orch_max_tool_calls:
+            self._limit(run, "max_tool_calls")
+            return reject("Tool call limit reached.", "limit_reached")
+        args = call.arguments
+        refs, unknown = [], []
+        for cid in args.get("evidence_ids", []) or []:
+            src = run.sources.get(str(cid))
+            if src is None:
+                unknown.append(str(cid))
+                continue
+            refs.append(EvidenceRef(cite_id=src.cite_id, kind=src.kind, label=src.label, file_path=src.file_path,
+                                    location=src.location, url=src.url, number=src.number))
+        files = list(dict.fromkeys(r.file_path for r in refs if r.kind == "project" and r.file_path))
+        related = [r for r in refs if r.kind == "github" and r.number is not None]
+        t0 = time.perf_counter()
+        draft = build_draft(
+            self.settings, self.issue_repo or "", str(args.get("title", "")), str(args.get("summary", "")),
+            steps_to_reproduce=args.get("steps_to_reproduce"), expected_behavior=args.get("expected_behavior"),
+            actual_behavior=args.get("actual_behavior"), error_messages=args.get("error_messages"),
+            relevant_files=files, related=related, investigation_steps=args.get("investigation_steps"),
+            evidence=refs, project_root=self.project,
+        )
+        if unknown:
+            draft.warnings.append(f"Ignored unknown evidence ids: {', '.join(unknown)}.")
+        run.executed += 1
+        run.issue_draft = draft
+        self.drafts[draft.draft_id] = draft
+        content = json.dumps({
+            "ok": True, "draft_id": draft.draft_id, "status": "draft_ready_for_human_review",
+            "note": "Nothing was created. The user will review, edit, and approve or cancel this draft in the app.",
+            "validation_errors": draft.errors, "warnings": draft.warnings,
+        })
+        run.add_trace(iteration=iteration, kind="tool", name=PREPARE_ISSUE_TOOL, status="ok",
+                      args={k: f"<{len(str(v))} chars>" for k, v in args.items()},
+                      duration_ms=round((time.perf_counter() - t0) * 1000, 1), result_chars=len(content))
+        return reply(json.loads(content), False)
 
     @staticmethod
     def _limit(run: _Run, name: str) -> None:
@@ -472,7 +561,7 @@ class Investigator:
             input_tokens=run.input_tokens, output_tokens=run.output_tokens,
             latency=Latency(total_ms=round((time.perf_counter() - started) * 1000, 1),
                             llm_ms=round(run.llm_ms, 1), tools_ms=round(run.tools_ms, 1)),
-            trace=run.trace,
+            trace=run.trace, issue_draft=run.issue_draft,
         )
 
 
@@ -482,3 +571,30 @@ def build_tool_llm(settings: Settings) -> ToolCallingLLM:
     if not callable(getattr(llm, "chat", None)):
         raise LLMToolsUnsupportedError(f"LLM provider '{settings.llm_provider}' does not support tool calling.")
     return llm  # type: ignore[return-value]
+
+
+def _answer_section(text: str, heading: str) -> str:
+    match = re.search(rf"(?ims)^##\s*{re.escape(heading)}\s*$(.*?)(?=^##\s|\Z)", text)
+    return match.group(1).strip() if match else ""
+
+
+def draft_from_answer(settings: Settings, result: InvestigationResult, issue_repo: str, project_root: Path) -> IssueDraft:
+    """A draft built by the app (not the model) from an answer and its cited sources.
+
+    Used when the user asks for a draft after an investigation that didn't prepare one.
+    """
+    cited = result.cited_sources
+    refs = [EvidenceRef(cite_id=s.cite_id, kind=s.kind, label=s.label, file_path=s.file_path,
+                        location=s.location, url=s.url, number=s.number) for s in cited]
+    summary = _answer_section(result.answer_text, "Summary") or result.answer_text[:1500]
+    causes = _answer_section(result.answer_text, "Possible causes")
+    steps = _answer_section(result.answer_text, "Suggested debugging steps")
+    title = " ".join(result.question.split())
+    return build_draft(
+        settings, issue_repo, title[:200],
+        summary + (f"\n\n**Possible causes (from the investigation)**\n\n{causes}" if causes else ""),
+        relevant_files=list(dict.fromkeys(r.file_path for r in refs if r.kind == "project" and r.file_path)),
+        related=[r for r in refs if r.kind == "github" and r.number is not None],
+        investigation_steps=steps or None, source_question=result.question, evidence=refs,
+        project_root=project_root,
+    )
