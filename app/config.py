@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     github_max_body_chars: int = Field(default=4000, gt=0)
     github_max_comments: int = Field(default=10, ge=0, le=100)
 
+    # ---- Phase 7: human-approved GitHub writes ----
+    # A separate token and allowlist: writes never use GITHUB_TOKEN, reads never use this one.
+    github_write_token: SecretStr | None = None
+    github_write_enabled: bool = False
+    github_write_allowed_repos: str = ""  # comma-separated owner/name; separate from GITHUB_ALLOWED_REPOS
+    approval_ttl_seconds: int = Field(default=600, ge=30, le=3600)
+    mcp_enable_write_tools: bool = False  # expose create_github_issue (with elicitation) to MCP clients
+    audit_log_path: Path = Path("./audit/github_writes.jsonl")
+
     # ---- Phase 6: orchestration ----
     orch_max_tool_calls: int = Field(default=6, ge=1, le=50)  # tool executions per question
     orch_max_iterations: int = Field(default=4, ge=1, le=20)  # model turns that may call tools
@@ -90,6 +99,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "llm_model", "llm_base_url", "anthropic_api_key", "openai_api_key", "github_token", "github_default_repo",
+        "github_write_token",
         mode="before",
     )
     @classmethod
