@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic>=1.13.0",
     "chromadb>=1.5.9",
+    "fastapi>=0.143.1",
     "httpx>=0.28.1",
     "mcp>=2.3.0",
     "openai>=3.29.0",
@@ -18,6 +19,7 @@ dependencies = [
     "sentence-transformers>=6.1.0",
     "streamlit>=1.65.0",
     "torch>=2.6",
+    "uvicorn>=0.54.0",
 ]
 
 # Install the CPU-only torch build (no CUDA libraries, a much smaller venv).
@@ -30,6 +32,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [project.scripts]
+ai-dev-assistant = "app.web.server:cli"
 ai-dev-assistant-mcp = "app.mcp_server.server:main"
 
 [dependency-groups]
