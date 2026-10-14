@@ -7,6 +7,8 @@ Usage:
     python -m app.cli stats  --path ./repo
     python -m app.cli ask    --path ./repo "How does login work?" [--top-k 5] [--type py] [--show-sources]
     python -m app.cli github repo|search|issue|prs|pr ... [--repo owner/name]   (read-only)
+    python -m app.cli investigate --path ./repo [--repo owner/name] [--mode auto|project|github] [--trace] "question"
+    python -m app.cli chat --path ./repo [--repo owner/name] [--mode ...]
 """
 
 import argparse
@@ -22,6 +24,15 @@ from app.integrations.github_models import RateLimitStatus
 from app.ingestion.models import Chunk
 from app.ingestion.pipeline import PipelineResult, run_pipeline
 from app.llm.base import LLMError
+from app.orchestration.assistant import (
+    InvestigationResult,
+    Investigator,
+    OrchestrationConfigError,
+    SessionConfig,
+    build_tool_llm,
+    unwrap_untrusted,
+)
+from app.orchestration.tool_backends import InProcessBackend, MCPClientBackend, ToolBackend
 from app.rag.answer_generator import Answer, AnswerGenerator
 from app.retrieval.indexer import IndexReport, build_index, index_stats
 from app.retrieval.retriever import RetrievedChunk, Retriever
@@ -225,6 +236,104 @@ def cmd_github(args: argparse.Namespace, settings: Settings) -> None:
             print(f"\n{format_rate_limit(client.last_rate_limit, client.authenticated)}")
 
 
+def format_investigation(result: InvestigationResult, show_trace: bool = False) -> str:
+    lines = [result.answer_text, ""]
+    if result.invalid_citations:
+        lines.append(f"! Invalid citations (not returned by any tool): {', '.join(result.invalid_citations)}")
+    if result.limits_hit:
+        lines.append(f"! Limits reached: {', '.join(result.limits_hit)} (answered with the evidence gathered)")
+    if result.github_disabled:
+        lines.append("! GitHub calls were disabled for this question after a rate limit")
+
+    def section(title: str, sources: list) -> None:  # type: ignore[type-arg]
+        cited = [s for s in sources if s.cited]
+        if not sources:
+            return
+        lines.append(f"{title} ({len(cited)} cited of {len(sources)} found):")
+        for src in cited if not show_trace else sources:
+            mark = "" if src.cited else "  (not cited)"
+            if src.kind == "project":
+                score = f", score {src.score:.3f}" if src.score is not None else ""
+                lines.append(f"  [{src.cite_id}] {src.file_path} ({src.location}{score}){mark}")
+            else:
+                kind = "PR" if src.is_pull_request else "issue"
+                lines.append(f"  [{src.cite_id}] {kind} {unwrap_untrusted(src.label)[:110]}{mark}")
+                lines.append(f"        {src.url}")
+
+    section("Project sources", result.project_sources)
+    section("GitHub sources", result.github_sources)
+    lines.append("")
+    lines.append(f"Tools: {result.tool_calls} executed, {result.cached_calls} cached, {result.rejected_calls} rejected"
+                 f" | mode {result.mode} | repo {result.repo or '-'}")
+    lines.append(f"LLM: {result.llm_calls} calls, {result.input_tokens} in / {result.output_tokens} out tokens"
+                 f" | {result.model} ({result.provider}) | prompt {result.prompt_version}")
+    lat = result.latency
+    lines.append(f"Latency: total {lat.total_ms / 1000:.1f}s (LLM {lat.llm_ms / 1000:.1f}s, tools {lat.tools_ms / 1000:.1f}s)")
+    if show_trace:
+        lines.append("")
+        lines.append("Trace:")
+        for t in result.trace:
+            if t.kind == "llm":
+                lines.append(f"  {t.step:>2}. [it {t.iteration}] LLM {t.status:<10} {t.duration_ms / 1000:5.1f}s "
+                             f"tokens {t.input_tokens}/{t.output_tokens} tool_calls={t.tool_calls_requested}")
+            else:
+                err = f" category={t.error_category}" if t.error_category else ""
+                size = f" result={t.result_chars} chars" if t.result_chars is not None else ""
+                lines.append(f"  {t.step:>2}. [it {t.iteration}] tool {t.name:<26} {t.status:<8} "
+                             f"{t.duration_ms / 1000:5.2f}s args={t.args}{size}{err}")
+    return "\n".join(lines)
+
+
+def open_investigation(args: argparse.Namespace, settings: Settings) -> tuple[Investigator, ToolBackend]:
+    """The investigator for the session given on the command line (tools via a real MCP session by default)."""
+    project = settings.project_root
+    llm = build_tool_llm(settings)
+    backend: ToolBackend = (
+        InProcessBackend(settings, project) if args.backend == "inprocess" else MCPClientBackend(settings, project)
+    )
+    try:
+        session = SessionConfig(project_path=project, repo=args.repo, mode=args.mode)
+        return Investigator(settings, llm, backend, session), backend
+    except Exception:
+        backend.close()
+        raise
+
+
+def cmd_investigate(args: argparse.Namespace, settings: Settings) -> None:
+    investigator, backend = open_investigation(args, settings)
+    try:
+        print(format_investigation(investigator.ask(args.question), show_trace=args.trace))
+    finally:
+        backend.close()
+
+
+def cmd_chat(args: argparse.Namespace, settings: Settings) -> None:
+    investigator, backend = open_investigation(args, settings)
+    print(f"Investigating {investigator.project.name} (mode {investigator.mode}, repo {investigator.repo or '-'}). "
+          "Commands: /reset clears memory, /exit quits.")
+    try:
+        while True:
+            try:
+                question = input("\nyou> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not question:
+                continue
+            if question in ("/exit", "/quit"):
+                break
+            if question == "/reset":
+                investigator.reset()
+                print("Memory cleared.")
+                continue
+            try:
+                print("\n" + format_investigation(investigator.ask(question), show_trace=args.trace))
+            except (LLMError, OrchestrationConfigError) as exc:
+                print(f"Error: {exc}")
+    finally:
+        backend.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -282,6 +391,23 @@ def build_parser() -> argparse.ArgumentParser:
     prs.add_argument("--limit", type=int, default=None)
     pr = add_github("pr", "One pull request with changed files")
     pr.add_argument("number", type=int)
+
+    def add_session_args(cmd: argparse.ArgumentParser) -> None:
+        cmd.add_argument("--repo", help="GitHub repo owner/name for this session (default: GITHUB_DEFAULT_REPO)")
+        cmd.add_argument("--mode", choices=["auto", "project", "github"], default="auto",
+                         help="Which tools the assistant may use (default: auto)")
+        cmd.add_argument("--trace", action="store_true", help="Print the investigation trace")
+        cmd.add_argument("--backend", choices=["mcp", "inprocess"], default="mcp",
+                         help="Run tools through the real MCP server (default) or in-process")
+
+    investigate = add_command("investigate", "Investigate a question with project and GitHub tools")
+    investigate.add_argument("question")
+    add_session_args(investigate)
+    investigate.set_defaults(handler=cmd_investigate)
+
+    chat = add_command("chat", "Interactive multi-turn investigation")
+    add_session_args(chat)
+    chat.set_defaults(handler=cmd_chat)
     return parser
 
 
@@ -295,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = get_settings(**overrides)
         args.handler(args, settings)
-    except (ValueError, NotADirectoryError, VectorStoreError, LLMError, GitHubError) as exc:
+    except (ValueError, NotADirectoryError, VectorStoreError, LLMError, GitHubError, OrchestrationConfigError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0
