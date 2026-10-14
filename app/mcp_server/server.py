@@ -12,8 +12,11 @@ from typing import Annotated, Literal
 import httpx
 
 from mcp.server import MCPServer
+from mcp.server.elicitation import ElicitationResult
+from mcp.server.mcpserver import Elicit, Resolve
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
 from app.mcp_server.errors import tool_errors
@@ -29,7 +32,10 @@ from app.mcp_server.schemas import (
     RelativeFilePath,
     SearchResult,
 )
+from app.actions.audit import AuditLog
+from app.actions.issue_draft import BODY_MAX, TITLE_MAX, manual_draft
 from app.integrations.github_models import Issue, IssueSearchResult, PullRequest, PullRequestList, Repository
+from app.integrations.github_write_client import CreateIssueResult, GitHubWriteClient, write_configured
 from app.mcp_server.security import GITHUB_UNTRUSTED_NOTE, UNTRUSTED_NOTE, ServerConfigError
 from app.mcp_server.tools.github_tools import GitHubTools
 from app.mcp_server.tools.project_tools import ProjectTools
@@ -43,6 +49,18 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempot
 READ_ONLY_EXTERNAL = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True
 )
+
+# The only write tool: not read-only, not destructive (it adds), not idempotent, external.
+WRITE_EXTERNAL = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
+)
+
+
+class IssueConfirmation(BaseModel):
+    """What the user fills in to approve an issue (MCP elicitation form)."""
+
+    confirm_repo: str = Field(description="Type the destination repository (owner/name) exactly to create the issue.")
+
 
 RepoParam = Annotated[
     str | None,
@@ -78,6 +96,7 @@ def create_server(
     settings: Settings | None = None,
     embedding_provider: EmbeddingProvider | None = None,
     github_transport: httpx.BaseTransport | None = None,
+    github_write_transport: httpx.BaseTransport | None = None,
 ) -> MCPServer:
     """Build the server. Raises ServerConfigError if MCP_ALLOWED_PROJECT_ROOTS is empty or invalid.
 
@@ -226,7 +245,74 @@ def create_server(
         with tool_errors("get_github_pull_request"):
             return github.get_pull_request(repo, number)
 
+    if settings.mcp_enable_write_tools and write_configured(settings):
+        _register_write_tool(server, settings, github_transport, github_write_transport)
     return server
+
+
+def _register_write_tool(
+    server: MCPServer,
+    settings: Settings,
+    read_transport: httpx.BaseTransport | None,
+    write_transport: httpx.BaseTransport | None,
+) -> None:
+    """create_github_issue: only with MCP_ENABLE_WRITE_TOOLS=true, and only after the user confirms via elicitation.
+
+    The confirmation is a resolver-injected parameter (``Resolve`` + ``Elicit``), the SDK's
+    elicitation mechanism for both protocol generations (input-required rounds on
+    2026-07-28+, a server-to-client request on older versions). The resolver checks
+    the draft first, so a draft with secrets is refused before anything is shown.
+    A client without elicitation support gets a "missing capability" error and the
+    tool body (the only code that writes) never runs.
+    """
+    from app.integrations.github_client import GitHubClient
+
+    audit = AuditLog(settings.audit_log_path)
+
+    def ask_user(repo: str, title: str, body: str) -> Elicit[IssueConfirmation]:
+        draft = manual_draft(settings, repo, title, body)
+        if not draft.valid:
+            audit.record("blocked", draft.repo, draft.draft_hash, len(draft.title), "mcp", error_category="validation")
+            raise ToolError("Not created: " + " ".join(draft.errors))
+        return Elicit(
+            f"Create this GitHub issue?\n\nRepository: {draft.repo}\nTitle: {draft.title}\n\n{draft.body}\n\n"
+            "Type the repository name to confirm. Decline or cancel to create nothing.",
+            IssueConfirmation,
+        )
+
+    @server.tool(title="Create a GitHub issue (asks the user to confirm)", annotations=WRITE_EXTERNAL)
+    def create_github_issue(
+        repo: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$",
+                                   description="Destination repository owner/name (must be write-allowlisted).")],
+        title: Annotated[str, Field(min_length=1, max_length=TITLE_MAX)],
+        body: Annotated[str, Field(max_length=BODY_MAX)],
+        confirmation: Annotated[ElicitationResult[IssueConfirmation], Resolve(ask_user)],
+    ) -> CreateIssueResult:
+        """Create a GitHub issue after the user explicitly confirms it.
+
+        The server shows the user the exact repository, title and body (MCP elicitation) and creates the
+        issue only if they accept and type the repository name. If the client can't ask the user, or the
+        user declines or cancels, nothing is created. The draft is checked first: secrets block it; local
+        paths, @mentions and closing keywords are neutralized. Only repositories in
+        GITHUB_WRITE_ALLOWED_REPOS are allowed. Never retried; an unknown outcome is reported as unknown.
+        """
+        draft = manual_draft(settings, repo, title, body)  # same content the user was shown
+        if not draft.valid:
+            raise ToolError("Not created: " + " ".join(draft.errors))
+        if confirmation.action != "accept" or confirmation.data.confirm_repo.strip() != draft.repo:
+            reason = confirmation.action if confirmation.action != "accept" else "confirmation_mismatch"
+            audit.record("cancelled", draft.repo, draft.draft_hash, len(draft.title), "mcp", error_category=reason)
+            raise ToolError("Not created: the user declined, cancelled, or the confirmation didn't match the repository.")
+        audit.record("approved", draft.repo, draft.draft_hash, len(draft.title), "mcp")
+        client = GitHubWriteClient(settings, transport=write_transport,
+                                   read_client_factory=lambda: GitHubClient(settings, transport=read_transport))
+        try:
+            outcome = client.create_issue(draft.repo, draft.title, draft.body)
+        finally:
+            client.close()
+        audit.record(outcome.status, draft.repo, draft.draft_hash, len(draft.title), "mcp",
+                     issue_number=outcome.number, issue_url=outcome.html_url, error_category=outcome.error_category)
+        return outcome
 
 
 def main() -> None:
