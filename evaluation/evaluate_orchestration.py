@@ -10,6 +10,12 @@ count as the expected evidence. Per case and on average this reports:
 - citations_valid         no invalid [S#]/[G#] citations
 - expected_evidence       an expected file was cited, or an expected issue/PR was found
                           (None when the case lists no expectations)
+- bugs_found              for cases with "expected_bugs": which known bugs the answer
+                          identifies (every regex in a bug's "all_patterns" matches);
+                          bugs_ok = at least "min_bugs" found
+
+Cases may set "project" (path) and "repo" to override the defaults, and
+"optional_tools" for tool groups that are acceptable but not required.
 - tool_calls, llm_calls, tokens, latency
 
 Tools run through the real MCP server (MCPClientBackend). Needs a working
@@ -22,6 +28,7 @@ Usage:
 import argparse
 import json
 import logging
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -60,14 +67,21 @@ def categories_used(result: InvestigationResult) -> set[str]:
     return used
 
 
+def bugs_found(case: dict[str, Any], answer: str) -> list[str]:
+    return [bug["id"] for bug in case.get("expected_bugs", [])
+            if all(re.search(pattern, answer) for pattern in bug["all_patterns"])]
+
+
 def score_case(case: dict[str, Any], result: InvestigationResult) -> dict[str, Any]:
     expected = set(case["expected_tools"])
+    acceptable = expected | set(case.get("optional_tools", []))
     used = categories_used(result)
     unneeded = 0
     for step in result.trace:
         if step.kind == "tool" and step.status != "rejected":
             category = "project" if step.name in PROJECT_TOOLS else "github" if step.name in GITHUB_TOOLS else None
-            unneeded += int(category is not None and category not in expected)
+            unneeded += int(category is not None and category not in acceptable)
+    found_bugs = bugs_found(case, result.answer_text)
 
     cited_files = {s.file_path for s in result.project_sources if s.cited}
     found_issues = {s.number for s in result.github_sources}
@@ -79,7 +93,9 @@ def score_case(case: dict[str, Any], result: InvestigationResult) -> dict[str, A
     return {
         "expected_tools": sorted(expected),
         "used_tools": sorted(used),
-        "tool_selection_correct": used == expected,
+        "tool_selection_correct": expected <= used <= acceptable,
+        "bugs_found": found_bugs,
+        "bugs_ok": len(found_bugs) >= case["min_bugs"] if case.get("expected_bugs") else None,
         "unnecessary_calls": unneeded,
         "limit_hit": bool(result.limits_hit),
         "limits": result.limits_hit,
@@ -108,6 +124,7 @@ def averages(rows: list[dict[str, Any]]) -> dict[str, float]:
         "limit_hit_rate": avg("limit_hit"),
         "citation_validity": avg("citations_valid"),
         "expected_evidence_rate": avg("expected_evidence"),
+        "bug_detection_rate": avg("bugs_ok"),
         "tool_calls_per_case": avg("tool_calls"),
         "llm_calls_per_case": avg("llm_calls"),
         "input_tokens_total": float(sum(r["input_tokens"] for r in rows)),
@@ -154,12 +171,19 @@ def main() -> None:
         print(f"Indexed {report.chunks_indexed} chunks ({report.model_name})\n")
 
     rows: list[dict[str, Any]] = []
-    with MCPClientBackend(settings, args.path) as backend:
+    backends: dict[Path, MCPClientBackend] = {}
+    try:
         for i, case in enumerate(cases):
             if i and args.pause:
                 time.sleep(args.pause)
-            investigator = Investigator(settings, llm, backend,
-                                        SessionConfig(project_path=args.path, repo=args.repo, mode="auto"))
+            project = (REPO_ROOT / case["project"]).resolve() if case.get("project") else args.path.resolve()
+            repo = case["repo"] if "repo" in case else args.repo
+            if project not in backends:
+                if not args.skip_index and project != args.path.resolve():
+                    build_index(project, rebuild=True, settings=settings)
+                backends[project] = MCPClientBackend(settings, project)
+            investigator = Investigator(settings, llm, backends[project],
+                                        SessionConfig(project_path=project, repo=repo, mode="auto"))
             try:
                 result = investigator.ask(case["question"])
             except LLMError as exc:
@@ -174,10 +198,14 @@ def main() -> None:
             rows.append(row)
             mark = "ok " if row["tool_selection_correct"] else "XX "
             evidence = {True: "yes", False: "NO", None: "-"}[row["expected_evidence"]]
+            bugs = f" | bugs {row['bugs_found'] or 'none'}" if case.get("expected_bugs") else ""
             print(f"{case['id']} {mark} expected {row['expected_tools'] or ['none']} used {row['used_tools'] or ['none']}"
-                  f" | calls {row['tool_calls']} (unneeded {row['unnecessary_calls']}) | evidence {evidence}"
+                  f" | calls {row['tool_calls']} (unneeded {row['unnecessary_calls']}) | evidence {evidence}{bugs}"
                   f" | cites valid {row['citations_valid']} | limits {row['limits'] or '-'}"
                   f" | tokens {row['input_tokens']}/{row['output_tokens']} | {row['latency_ms'] / 1000:.1f}s")
+    finally:
+        for backend in backends.values():
+            backend.close()
 
     results = {
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
