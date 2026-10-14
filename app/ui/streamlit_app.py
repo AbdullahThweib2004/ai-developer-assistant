@@ -15,6 +15,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from app.actions.approval import ApprovalError, IssueApprovalService
+from app.actions.issue_draft import IssueDraft
 from app.config import Settings, get_settings
 from app.integrations.github_client import resolve_repo
 from app.integrations.github_errors import GitHubError
@@ -26,8 +28,10 @@ from app.orchestration.assistant import (
     OrchestrationConfigError,
     SessionConfig,
     build_tool_llm,
+    draft_from_answer,
     unwrap_untrusted,
 )
+from app.integrations.github_write_client import write_allowed_repos, write_configured
 from app.orchestration.tool_backends import MCPClientBackend
 from app.rag.answer_generator import Answer, AnswerGenerator
 from app.retrieval.embeddings import EmbeddingProvider, get_embedding_provider
@@ -234,6 +238,90 @@ def render_investigation(result: InvestigationResult) -> None:
                f"total {lat.total_ms / 1000:.1f}s · `{result.model}` · prompt `{result.prompt_version}`")
 
 
+# ---- issue drafts with human approval --------------------------------------------------------
+
+
+def approval_service(settings: Settings, project: Path) -> IssueApprovalService:
+    """One approval service per browser session: drafts, approvals and attempts live here."""
+    if "approval_service" not in st.session_state:
+        st.session_state["approval_service"] = IssueApprovalService(settings, channel="ui", project_root=project)
+    return st.session_state["approval_service"]
+
+
+def issue_panel(settings: Settings, project: Path, result: InvestigationResult, turn_index: int) -> None:
+    """Draft -> edit -> approve (typed repo name) -> one creation attempt."""
+    if not write_configured(settings):
+        st.caption("GitHub issue creation is disabled or not configured (GITHUB_WRITE_ENABLED, GITHUB_WRITE_TOKEN, "
+                   "GITHUB_WRITE_ALLOWED_REPOS).")
+        return
+    service = approval_service(settings, project)
+    key = f"draft_for_turn_{turn_index}"
+    if key not in st.session_state:
+        if st.button("Prepare GitHub issue", key=f"prepare_{turn_index}"):
+            repos = write_allowed_repos(settings)
+            draft = result.issue_draft or draft_from_answer(settings, result, repos[0].full_name, project)
+            st.session_state[key] = service.add_draft(draft).draft_id
+            st.rerun()
+        return
+    draft = service.drafts[st.session_state[key]]
+    render_draft_editor(service, draft, turn_index)
+
+
+def render_draft_editor(service: IssueApprovalService, draft: IssueDraft, turn_index: int) -> None:
+    st.markdown("#### Draft GitHub issue")
+    st.warning(f"Destination repository: **{draft.repo}**. Nothing is created until you approve.")
+    attempted = draft.draft_id in service.attempted
+    with st.form(f"draft_form_{turn_index}"):
+        title = st.text_input("Title", value=draft.title, disabled=attempted)
+        body = st.text_area("Body (Markdown)", value=draft.body, height=320, disabled=attempted)
+        labels = st.text_input("Labels (comma-separated, optional)", value=", ".join(draft.labels), disabled=attempted)
+        if st.form_submit_button("Save edits (requires approval again)", disabled=attempted):
+            service.edit_draft(draft.draft_id, title=title, body=body,
+                               labels=[label.strip() for label in labels.split(",") if label.strip()])
+            st.rerun()
+    with st.expander("Preview", expanded=True):
+        st.markdown(f"**{draft.title}**")
+        st.markdown(draft.body)
+    for warning in draft.warnings:
+        st.caption(f"Note: {warning}")
+    for error in draft.errors:
+        st.error(error)
+
+    if attempted:
+        result = service.results.get(draft.draft_id)
+        if result and result.status == "created":
+            st.success(f"Created issue #{result.number}: {result.html_url}")
+        elif result:
+            st.error(f"Not confirmed as created ({result.status}): {result.message}")
+            for match in result.possible_matches:
+                st.markdown(f"- possible match: [#{match.number}]({match.html_url}) {match.title}")
+        return
+
+    try:
+        similar = service.find_similar(draft) if draft.valid else []
+    except Exception:  # noqa: BLE001 - informational only; submit re-checks
+        similar = []
+    if similar:
+        st.warning("Similar open issues already exist:")
+        for issue in similar:
+            st.markdown(f"- [#{issue.number}]({issue.html_url}) {issue.title} ({issue.similarity:.0%} similar)")
+    confirm = st.text_input(f"Type `{draft.repo}` to confirm", key=f"confirm_{turn_index}_{draft.draft_hash[:8]}")
+    create_anyway = st.checkbox("Create even though similar issues exist", key=f"similar_{turn_index}") if similar else True
+    col1, col2 = st.columns(2)
+    ready = draft.valid and confirm.strip() == draft.repo and create_anyway
+    if col1.button("Approve and create", type="primary", disabled=not ready, key=f"approve_{turn_index}"):
+        try:
+            approval = service.approve(draft.draft_id, confirm)
+            service.submit(approval.approval_id, confirm_similar=bool(similar))
+        except ApprovalError as exc:
+            st.error(str(exc))
+        st.rerun()
+    if col2.button("Cancel", key=f"cancel_{turn_index}"):
+        service.cancel(draft.draft_id)
+        del st.session_state[f"draft_for_turn_{turn_index}"]
+        st.info("Cancelled. Nothing was created.")
+
+
 def investigate_tab(settings: Settings, project: Path) -> None:
     st.caption("Multi-turn investigations. The assistant decides whether to search the project, GitHub, both or "
                "neither, using read-only tools through the MCP server.")
@@ -257,11 +345,12 @@ def investigate_tab(settings: Settings, project: Path) -> None:
     if current and current["key"] != (str(project), repo, mode):
         st.info("Settings changed: the next question starts a new conversation.")
 
-    for turn in st.session_state.get("turns", []):
+    for index, turn in enumerate(st.session_state.get("turns", [])):
         with st.chat_message("user"):
             st.markdown(turn.question)
         with st.chat_message("assistant"):
             render_investigation(turn)
+            issue_panel(settings, project, turn, index)
 
     question = st.chat_input("Ask about the project or its GitHub issues...")
     if not question:
@@ -278,6 +367,7 @@ def investigate_tab(settings: Settings, project: Path) -> None:
             return
         render_investigation(result)
     st.session_state.setdefault("turns", []).append(result)
+    st.rerun()  # re-render through the history loop so the issue panel appears for this answer
 
 
 def main() -> None:
