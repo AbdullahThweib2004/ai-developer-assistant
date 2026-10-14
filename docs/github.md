@@ -1,8 +1,11 @@
-# GitHub integration (read-only)
+# GitHub integration
 
 The assistant can look up repositories, issues and pull requests through the GitHub
-REST API, from the CLI (`python -m app.cli github ...`) and as MCP tools. This phase
-is **read-only**: nothing is ever created, edited, commented on, labeled or closed.
+REST API, from the CLI (`python -m app.cli github ...`) and as MCP tools. Reading is
+described below. Since Phase 7 it can also **create issues, but only after a human
+approves the exact draft**. That is the single write operation; nothing is edited,
+commented on, labeled or closed. See [Write access](#write-access-issue-creation) and
+[approval.md](approval.md).
 
 ## Token (optional)
 
@@ -29,11 +32,41 @@ settings → Personal access tokens → Fine-grained tokens → Generate new tok
 Put it in `.env` (never commit it):
 
 ```bash
-GITHUB_TOKEN=github_pat_...
+GITHUB_TOKEN=<your fine-grained token>
 ```
 
 The token is stored as a secret value, sent only in the `Authorization` header to
 `GITHUB_API_URL`, and never written to logs, errors, CLI output or tool results.
+
+## Write access (issue creation)
+
+Writes use a **separate token and a separate allowlist**. Reads never use the write
+token, and writes never use `GITHUB_TOKEN`.
+
+Create a second fine-grained token for the write repositories only (for example a
+sandbox repo). Go to GitHub → Settings → Developer settings → Fine-grained tokens →
+Generate new token:
+
+- Repository access: **Only select repositories**, then pick the sandbox repository.
+- Repository permissions: **Issues: Read and write**. Metadata (read-only) is added
+  automatically. Leave everything else at **No access**.
+- Set a short expiration.
+
+```bash
+GITHUB_WRITE_TOKEN=<your write token>          # never commit it; .env is gitignored
+GITHUB_WRITE_ENABLED=true                      # default false
+GITHUB_WRITE_ALLOWED_REPOS=OWNER/SANDBOX-REPO  # the read allowlist grants nothing here
+APPROVAL_TTL_SECONDS=600
+MCP_ENABLE_WRITE_TOOLS=false                   # keep off unless you trust your MCP client
+AUDIT_LOG_PATH=./audit/github_writes.jsonl
+```
+
+Creating an issue is `POST /repos/{owner}/{repo}/issues`, which needs the **Issues**
+repository permission with write access. GitHub returns `201` with the issue
+`number` and `html_url`. It returns `403`/`404` when the token lacks access, `410`
+when issues are disabled, and `422` for invalid fields or spam detection. Creating
+content quickly can trigger secondary rate limits. Labels are dropped silently
+without push access.
 
 ## Configuration
 
@@ -154,4 +187,8 @@ Notes for clients:
    tools for such text to trigger anyway.
 5. **Bounded output.** Results, pages, body length and comment count are capped
    and flagged when truncated.
-6. **No write operations yet.** Creating issues (with human approval) is Phase 7.
+6. **One write operation, behind human approval.** `GitHubClient` stays GET-only.
+   Issue creation lives in the separate `GitHubWriteClient`, which can only
+   `POST /repos/{owner}/{repo}/issues` and never retries. It's reachable only through
+   the approval flow ([approval.md](approval.md)) or the elicitation-confirmed MCP
+   tool.

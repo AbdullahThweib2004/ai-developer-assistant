@@ -6,11 +6,12 @@ repository's code and documentation, answers questions using the retrieved code 
 cited context, and helps investigate errors. Through an MCP server it works with GitHub
 issues and pull requests, and any write action needs explicit human approval.
 
-> **Status:** Phases 1–6 are complete. An investigating assistant (CLI `investigate` and
+> **Status:** Phases 1–7 are complete. An investigating assistant (CLI `investigate` and
 > `chat`, plus a Streamlit tab) decides whether to search the local project, GitHub, both
 > or neither. It runs through a bounded, traced tool-use loop over the project's own MCP
-> server, and every answer has validated citations. Everything is read-only. Phase 7
-> (human-approved issue creation) is next.
+> server, and every answer has validated citations. It can **draft** a GitHub issue from
+> its findings; the issue is created only after you approve the exact draft. Phase 8
+> (evaluation, security and documentation) is next.
 
 ## Key features (planned)
 
@@ -30,8 +31,8 @@ issues and pull requests, and any write action needs explicit human approval.
 | 4 | MCP server | ✅ Done |
 | 5 | GitHub integration (read-only) | ✅ Done |
 | 6 | RAG + MCP orchestration | ✅ Done |
-| 7 | Human-approved issue creation | ⏭️ Next |
-| 8 | Evaluation, security & documentation | Planned |
+| 7 | Human-approved issue creation | ✅ Done |
+| 8 | Evaluation, security & documentation | ⏭️ Next |
 
 ## Architecture
 
@@ -69,6 +70,11 @@ flowchart LR
     user([Developer]) --> orch[Orchestrator<br/>bounded tool loop]
     orch -->|tool calling| llm
     orch -->|MCP client, stdio| mcp
+    orch -->|prepare_github_issue:<br/>draft only| draft[Issue draft<br/>sanitized + secret-scanned]
+    draft --> human{{Human approves<br/>types repo name}}
+    human -->|single-use, hash-bound| approve[Approval service<br/>+ audit log]
+    approve -->|one POST, no retry| ghw[GitHub write client<br/>separate token + allowlist]
+    ghw --> gh
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the detailed design.
@@ -150,6 +156,12 @@ cp .env.example .env
 | `ORCH_MAX_TOOL_CALLS` / `ORCH_MAX_ITERATIONS` / `ORCH_MAX_GITHUB_CALLS` | `6` / `4` / `3` | Investigation budget per question |
 | `ORCH_TOOL_TIMEOUT_SECONDS` | `30` | Per-tool timeout |
 | `ORCH_MEMORY_TURNS` | `4` | Previous turns kept as context in `chat` / the UI |
+| `GITHUB_WRITE_TOKEN` | *(none)* | Separate token with **Issues: Read and write** on the write repos only |
+| `GITHUB_WRITE_ENABLED` | `false` | Master switch for issue creation |
+| `GITHUB_WRITE_ALLOWED_REPOS` | *(empty)* | The only writable repos (the read allowlist grants nothing) |
+| `APPROVAL_TTL_SECONDS` | `600` | How long an approval stays valid |
+| `MCP_ENABLE_WRITE_TOOLS` | `false` | Expose `create_github_issue` (with elicitation) to external MCP clients |
+| `AUDIT_LOG_PATH` | `./audit/github_writes.jsonl` | Audit log of write attempts (gitignored) |
 
 ### LLM provider setup
 
@@ -373,6 +385,63 @@ ambiguous questions belong in a later evaluation round.
 uv run python evaluation/evaluate_orchestration.py --repo fastapi/fastapi --pause 5
 ```
 
+### Demo project
+
+[`examples/fastapi-auth-demo`](examples/fastapi-auth-demo) is a small FastAPI-style API
+(JWT bearer auth, users routes, docs) used for demos and evaluation. It is indexed and
+read, never executed. It contains two realistic bugs that both cause *"401 even with a
+bearer token"*. They are documented only in
+[`evaluation/demo_bugs.md`](evaluation/demo_bugs.md), so the assistant has to find them
+in the code. `examples/` is in `.assistantignore`, so it doesn't affect this repo's own
+index.
+
+```bash
+uv run python -m app.cli index --path examples/fastapi-auth-demo --rebuild
+uv run python -m app.cli investigate --path examples/fastapi-auth-demo --mode project --trace \
+  "Why do requests to /users/me return 401 even though I send a valid bearer token?"
+```
+
+In the live run, the assistant found both bugs: the case-sensitive `"bearer"` scheme
+check in `app/auth.py`, and the code reading `JWT_SECRET` while the docs say
+`JWT_SECRET_KEY`. The three demo evaluation cases
+([`orchestration_demo_questions.json`](evaluation/orchestration_demo_questions.json))
+scored 3/3 on bug detection and expected evidence, and 2/3 on tool selection. In one
+case the default GitHub repo was available and the model made an unnecessary GitHub
+search.
+
+### Create a GitHub issue (with your approval)
+
+The assistant can **draft** an issue from an investigation. Only you can create it:
+
+```bash
+uv run python -m app.cli investigate --path examples/fastapi-auth-demo --mode project --propose-issue \
+  "Why do requests to /users/me return 401 even though I send a valid bearer token? Please propose a GitHub issue."
+uv run python -m app.cli github draft-issue --repo OWNER/SANDBOX --title "..." --body-file body.md
+```
+
+1. The model gets one extra tool, `prepare_github_issue`, which only builds a draft.
+   No tool can create, submit or approve anything.
+2. The draft is sanitized and checked:
+   - secrets block it (only the kind is shown);
+   - local paths become relative;
+   - `@mentions` and closing keywords are neutralized;
+   - citation ids become file paths or `owner/repo#N`;
+   - credit lines are removed.
+3. You see the destination repo, title, body and labels, and **type the repo name** to
+   approve. Anything else cancels, and there is no auto-approve flag. If similar open
+   issues exist, you must confirm again.
+4. The approval is single-use, expires, and is bound to the draft's hash, so any edit
+   needs a new approval. The draft gets at most one creation attempt. The POST is
+   never retried, and a timeout is reported as an **unknown** outcome after checking
+   for an issue with the same title.
+5. Every approval, cancellation and result is appended to `audit/github_writes.jsonl`
+   (no body, no token).
+
+The Streamlit **Investigate** tab has the same flow: **Prepare GitHub issue** opens an
+editable draft with a preview, and **Approve and create** asks you to type the repo
+name. Writes use a separate token and allowlist (`GITHUB_WRITE_*`). See
+**[docs/approval.md](docs/approval.md)** for the threat model.
+
 ### Run the tests
 
 ```bash
@@ -478,6 +547,10 @@ ai-developer-assistant/
 │   │   ├── openai_compatible.py  # OpenAI, Groq, OpenRouter, Ollama, ...
 │   │   ├── fake_provider.py    # deterministic, for tests
 │   │   └── factory.py
+│   ├── actions/
+│   │   ├── issue_draft.py      # drafts: template, sanitizing, secret scan, hash
+│   │   ├── approval.py         # approve (typed repo) -> single-use, TTL, hash-bound -> one submit
+│   │   └── audit.py            # JSONL audit log (no bodies, no tokens)
 │   ├── orchestration/
 │   │   ├── assistant.py        # Investigator: bounded tool loop, injection, citations, trace
 │   │   ├── tool_backends.py    # MCPClientBackend (stdio) / InProcessBackend
@@ -498,10 +571,13 @@ ai-developer-assistant/
 │   │       └── github_tools.py   # GitHub tools: allowlist + untrusted wrapping
 │   └── integrations/
 │       ├── github_client.py    # GET-only httpx client: pagination, rate limits, retries
+│       ├── github_write_client.py  # create_issue only: one POST shape, never retried
 │       ├── github_models.py    # normalized repository/issue/PR models
 │       └── github_errors.py
 ├── scripts/
 │   └── mcp_smoke_test.py       # stdio client: list tools, ping, search
+├── examples/
+│   └── fastapi-auth-demo/      # demo API with two hidden auth bugs (indexed, never run)
 ├── evaluation/
 │   ├── questions.json          # retrieval questions (fixture project)
 │   ├── questions_self.json     # retrieval questions (this repository)
@@ -518,6 +594,8 @@ ai-developer-assistant/
 │   ├── mcp.md                  # MCP tools, security model, client setup
 │   ├── github.md               # GitHub token, allowlist, rate limits, tools
 │   ├── orchestration.md        # tool loop, limits, untrusted content, trace, memory
+│   ├── approval.md             # issue creation threat model and approval flow
+│   ├── pending_live_checks.md  # live checks to repeat (LLM, GitHub writes)
 │   └── pending_live_checks.md   # checks to run once an LLM key is set
 ├── .env.example
 ├── pyproject.toml
@@ -530,7 +608,7 @@ ai-developer-assistant/
 - **No code execution.** Indexed project code is never imported, executed or evaluated. YAML and JSON are only validated with safe parsers.
 - **Secrets stay out of the index.** `.env` files, keys, certificates and credential files are skipped before they are read, and are never logged or indexed. API keys are held as secret values and never logged or printed. Secrets are never committed to this repository.
 - **Know where your code goes.** Answering a question sends the retrieved chunks to the configured LLM provider. Use a local Ollama model if the code must not leave your machine. Prompts, retrieved code and answers are never written to logs.
-- **Human approval for write actions.** Creating issues, comments or pull requests always needs explicit confirmation from the user.
+- **Human approval for write actions.** The model can only draft an issue. Creation happens in app code after you type the repository name, with a single-use, short-lived approval bound to the exact content. It uses a separate write token and allowlist, every attempt is audited, and nothing else (comments, edits, closing) can be written.
 - **Retrieved content is untrusted.** Text from indexed files or GitHub is treated as data, never as instructions. Sources are wrapped in `<source>` tags, tag-like text inside them is escaped, and the system prompt tells the model to ignore instructions found in sources.
 - **The model never picks the target.** In investigations, the project path and GitHub repository are fixed by the session and injected into tool calls. The model only sees read-only tools, within a fixed budget.
 - **Citations are verified.** Every `[Sx]` in an answer is checked against the sources actually sent, and unknown citations are reported.

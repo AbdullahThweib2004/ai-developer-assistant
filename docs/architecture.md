@@ -646,3 +646,79 @@ identical.
   Possible causes, Suggested debugging steps, Open questions).
 
 See [orchestration.md](orchestration.md) for details.
+
+## Phase 7: Actions and human approval
+
+```mermaid
+flowchart LR
+    llm[LLM] -->|prepare_github_issue| inv[Investigator]
+    inv --> draft[issue_draft.py<br/>template, sanitize, secret scan, hash]
+    draft --> ui[CLI / Streamlit<br/>shows full draft]
+    ui -->|human types repo name| appr[approval.py<br/>IssueApprovalService]
+    appr -->|re-validate, allowlist, similar check,<br/>single attempt| wc[github_write_client.py<br/>POST /repos/o/r/issues only]
+    wc -->|write token| gh[(GitHub)]
+    wc -.->|unknown outcome:<br/>read client, read token| gh
+    appr --> audit[(audit/github_writes.jsonl)]
+    mcpc([External MCP client]) -->|create_github_issue<br/>only if MCP_ENABLE_WRITE_TOOLS| mcp[MCP server]
+    mcp -->|Resolve + Elicit:<br/>user confirms| wc
+```
+
+The actions layer (`app/actions/`) holds everything with side effects. It sits outside
+the model's reach.
+
+- **Draft** (`issue_draft.py`): `IssueDraft` has the content, the evidence references,
+  `errors`/`warnings`, and `draft_hash = sha256(repo, title, body, labels)`.
+  `finalize()` is the single function that sanitizes and validates. It runs for
+  model-prepared drafts, user-written drafts, every edit, and again right before
+  submission. Sanitizing:
+  - removes internal untrusted-content tags;
+  - makes local paths relative or redacts them;
+  - turns citation ids into file paths or `owner/repo#N`;
+  - neutralizes @mentions and closing keywords outside code;
+  - drops credit lines.
+
+  Validation checks the write allowlist, the limits and secrets.
+- **Approval** (`approval.py`): `IssueApprovalService` keeps the session's drafts,
+  approvals and attempted drafts.
+  - `approve` requires the typed repo name.
+  - Approvals are single-use, expire after `APPROVAL_TTL_SECONDS`, and are bound to
+    the hash.
+  - `edit_draft` voids approvals.
+  - `submit` re-checks everything, asks for a second confirmation when similar
+    issues exist, consumes the approval and the draft's single attempt *before*
+    sending, and then audits the result.
+- **Write client** (`app/integrations/github_write_client.py`): a separate class
+  using `GITHUB_WRITE_TOKEN`. Its request hook allows only
+  `POST /repos/{owner}/{repo}/issues` on the API host. It never retries. A 201 with a
+  number and URL is the only success. Timeouts, connection errors, 5xx responses and
+  malformed 201s count as *unknown*, followed by an exact-title check on the newest
+  issues through the read client. Other statuses are mapped to clear failures
+  (`auth`, `forbidden`, `rate_limited`, `not_found`, `issues_disabled`,
+  `validation`).
+- **Audit** (`audit.py`): append-only JSONL holding metadata only.
+
+### Orchestrator boundary
+
+`SessionConfig.issue_repo` is set only when the user asks for an issue
+(`--propose-issue` or the UI button), and it must be in the write allowlist. Only then
+does the model see `prepare_github_issue`. That tool runs in the orchestrator, never in
+a backend: it builds a draft from the model's text and the evidence ids (resolved
+against sources the tools actually returned), stores it in the session, and returns a
+draft id. It is limited to one per question.
+
+The prompt (`orch-v2`) adds the drafting rules only in that mode. The investigator's
+tool list never contains a create, submit or approve tool. Even when the MCP server
+exposes `create_github_issue`, the orchestrator filters it out, because it isn't
+read-only.
+
+### MCP write tool
+
+`create_github_issue` is registered only when `MCP_ENABLE_WRITE_TOOLS=true` and
+writing is configured. It is annotated `readOnlyHint: false`, `destructiveHint: false`,
+`idempotentHint: false`, `openWorldHint: true`. Its confirmation parameter is injected
+by a resolver that validates the draft and returns `Elicit[IssueConfirmation]`. The SDK
+asks the user through elicitation, using input-required rounds or a mid-call request
+depending on the protocol version.
+
+Only an accepted answer with the exact repo name lets the body run. A decline, a
+cancel, a mismatch or a client without elicitation creates nothing.
