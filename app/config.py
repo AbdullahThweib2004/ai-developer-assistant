@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     github_max_body_chars: int = Field(default=4000, gt=0)
     github_max_comments: int = Field(default=10, ge=0, le=100)
 
+    # ---- Phase 6: orchestration ----
+    orch_max_tool_calls: int = Field(default=6, ge=1, le=50)  # tool executions per question
+    orch_max_iterations: int = Field(default=4, ge=1, le=20)  # model turns that may call tools
+    orch_max_github_calls: int = Field(default=3, ge=0, le=20)  # GitHub tool executions per question
+    orch_tool_timeout_seconds: float = Field(default=30, gt=0)
+    orch_memory_turns: int = Field(default=4, ge=0, le=20)  # previous Q&A turns kept as context
+
     @property
     def mcp_allowed_roots(self) -> list[Path]:
         """Parsed MCP_ALLOWED_PROJECT_ROOTS (not resolved or validated here)."""
