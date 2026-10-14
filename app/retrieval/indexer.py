@@ -9,6 +9,8 @@ import hashlib
 import logging
 import time
 from collections import Counter
+from collections.abc import Callable
+from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,13 +80,25 @@ def build_index(
     rebuild: bool = True,
     settings: Settings | None = None,
     provider: EmbeddingProvider | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> IndexReport:
     """Index every chunk of ``project_path``.
 
     With ``rebuild=True`` the existing collection is deleted first. With
     ``rebuild=False`` an existing, non-empty index raises IndexExistsError
     (only full rebuilds are supported for now).
+
+    ``progress`` (optional) receives metadata-only events for UIs: ``discovered``,
+    ``parsed``, ``chunked``, ``embedding`` (per batch). It doesn't affect indexing.
     """
+
+    def report(event: dict[str, Any]) -> None:
+        if progress is not None:
+            try:
+                progress(event)
+            except Exception:  # an observer must never break indexing
+                logger.warning("index progress hook failed")
+
     started = time.perf_counter()
     settings = (settings or get_settings()).model_copy(update={"project_root": project_path})
     provider = provider or get_embedding_provider(settings)
@@ -99,6 +113,9 @@ def build_index(
         )
 
     result = run_pipeline(settings)
+    report({"type": "discovered", "files_found": result.files_found, "files_skipped": len(result.skipped)})
+    report({"type": "parsed", "documents": len(result.documents)})
+    report({"type": "chunked", "chunks": len(result.chunks)})
     file_info = {
         doc.id: {
             "file_modified_at": doc.modified_at,
@@ -113,6 +130,7 @@ def build_index(
         embeddings = provider.embed_documents([c.content for c in batch])
         store.upsert_chunks(batch, embeddings, file_info)
         logger.info("Indexed %d/%d chunks", min(i + batch_size, len(result.chunks)), len(result.chunks))
+        report({"type": "embedding", "done": min(i + batch_size, len(result.chunks)), "total": len(result.chunks)})
 
     return IndexReport(
         project_name=result.project_name,
