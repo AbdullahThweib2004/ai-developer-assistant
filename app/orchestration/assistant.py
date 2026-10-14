@@ -17,6 +17,7 @@ import logging
 import re
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -83,6 +84,13 @@ class OrchestrationConfigError(ValueError):
     """The session can't be set up (e.g. GitHub mode without a repository)."""
 
 
+class InvestigationCancelled(Exception):
+    """Raised by an ``on_event`` hook to stop an investigation (e.g. the user pressed Stop)."""
+
+
+EventHook = Callable[[dict[str, Any]], None]
+
+
 class SessionConfig(BaseModel):
     """Fixed by the application for a whole session; never chosen by the model."""
 
@@ -105,6 +113,9 @@ class EvidenceSource(BaseModel):
     number: int | None = None
     url: str | None = None
     is_pull_request: bool | None = None
+    state: str | None = None  # GitHub: open/closed
+    labels: list[str] = Field(default_factory=list)  # GitHub labels
+    excerpt: str | None = None  # the returned text (still untrusted), for display in UIs
     cited: bool = False
 
 
@@ -211,6 +222,18 @@ class _Run:
         self.output_tokens = 0
         self.llm_ms = 0.0
         self.tools_ms = 0.0
+        self.on_event: EventHook | None = None
+
+    def emit(self, event: dict[str, Any]) -> None:
+        """Notify the optional observer. Only cancellation is allowed to affect the run."""
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(event)
+        except InvestigationCancelled:
+            raise
+        except Exception:  # an observer bug must never change the investigation
+            logger.warning("on_event hook failed", exc_info=False)
 
     def add_trace(self, **fields: Any) -> None:
         self.trace.append(TraceStep(step=len(self.trace) + 1, **fields))
@@ -303,11 +326,19 @@ class Investigator:
 
     # ---- public ---------------------------------------------------------------------
 
-    def ask(self, question: str) -> InvestigationResult:
+    def ask(self, question: str, on_event: EventHook | None = None) -> InvestigationResult:
+        """Investigate ``question``.
+
+        ``on_event`` (optional) receives progress events as dicts: ``llm_call``,
+        ``step_started``, ``step_finished``. Events carry metadata only (no content),
+        exactly like the trace. The hook can't change the run; raising
+        InvestigationCancelled stops it.
+        """
         if not question or not question.strip():
             raise OrchestrationConfigError("The question must not be empty.")
         started = time.perf_counter()
         run = _Run()
+        run.on_event = on_event
         system = build_system_prompt(
             self.project.name, self.repo, self.mode, self._tool_groups(), self.settings.orch_max_tool_calls,
             self.settings.orch_max_github_calls if self.repo else 0, self.settings.orch_max_iterations,
@@ -357,9 +388,22 @@ class Investigator:
                       status="tool_calls" if response.tool_calls else "answer", duration_ms=round(elapsed, 1),
                       input_tokens=response.input_tokens, output_tokens=response.output_tokens,
                       tool_calls_requested=len(response.tool_calls))
+        run.emit({"type": "llm_call", **run.trace[-1].model_dump(exclude_none=True)})
         return response
 
     def _handle_call(self, run: _Run, iteration: int, call: ToolCall) -> ChatMessage:
+        run.emit({"type": "step_started", "iteration": iteration, "name": call.name,
+                  "args": self._sanitize(call.arguments), "call_id": call.id})
+        trace_len = len(run.trace)
+        message = self._handle_call_inner(run, iteration, call)
+        for step in run.trace[trace_len:]:
+            if step.kind == "tool":
+                run.emit({"type": "step_finished", "call_id": call.id,
+                          "result_count": _result_count(message.content) if not message.is_error else None,
+                          **step.model_dump(exclude_none=True)})
+        return message
+
+    def _handle_call_inner(self, run: _Run, iteration: int, call: ToolCall) -> ChatMessage:
         def reply(payload: dict[str, Any], is_error: bool) -> ChatMessage:
             return ChatMessage(role="tool", tool_call_id=call.id, content=json.dumps(payload), is_error=is_error)
 
@@ -523,22 +567,35 @@ class Investigator:
                 cite_id=cid, kind="github", label=f"{repo}#{number}: {title}"[:200], tool=tool,
                 repo=repo, number=number, url=item.get("html_url"), is_pull_request=is_pr))
 
+        def remember(cite_id: str, excerpt: str | None, item: dict[str, Any] | None = None) -> str:
+            """Keep display details (first value wins) for UIs; never sent to the model twice."""
+            source = run.sources[cite_id]
+            if source.excerpt is None and excerpt:
+                source.excerpt = excerpt[:4000]
+            if item is not None:
+                source.state = source.state or item.get("state")
+                source.labels = source.labels or list(item.get("labels") or [])
+            return cite_id
+
         if tool == "search_project":
             for hit in data.get("hits", []):
-                hit["cite"] = project(hit["file_path"], hit.get("location", ""), hit.get("score"))
+                hit["cite"] = remember(project(hit["file_path"], hit.get("location", ""), hit.get("score")),
+                                       hit.get("content"))
         elif tool == "read_project_file":
             location = f"lines {data.get('start_line')}-{data.get('end_line')}"
-            data["cite"] = project(data["file_path"], location, None)
+            data["cite"] = remember(project(data["file_path"], location, None), data.get("content"))
         elif tool == "search_github_issues":
             for item in data.get("items", []):
-                item["cite"] = github(item, data.get("repo", self.repo or ""), item.get("is_pull_request"))
+                cid = github(item, data.get("repo", self.repo or ""), item.get("is_pull_request"))
+                item["cite"] = remember(cid, item.get("body_excerpt"), item)
         elif tool == "list_github_pull_requests":
             for item in data.get("items", []):
-                item["cite"] = github(item, data.get("repo", self.repo or ""), True)
+                item["cite"] = remember(github(item, data.get("repo", self.repo or ""), True), None, item)
         elif tool == "get_github_issue":
-            data["cite"] = github(data, data.get("repo", self.repo or ""), data.get("is_pull_request"))
+            cid = github(data, data.get("repo", self.repo or ""), data.get("is_pull_request"))
+            data["cite"] = remember(cid, data.get("body"), data)
         elif tool == "get_github_pull_request":
-            data["cite"] = github(data, data.get("repo", self.repo or ""), True)
+            data["cite"] = remember(github(data, data.get("repo", self.repo or ""), True), data.get("body"), data)
         return data
 
     def _result(self, run: _Run, question: str, answer: str, started: float) -> InvestigationResult:
@@ -571,6 +628,18 @@ def build_tool_llm(settings: Settings) -> ToolCallingLLM:
     if not callable(getattr(llm, "chat", None)):
         raise LLMToolsUnsupportedError(f"LLM provider '{settings.llm_provider}' does not support tool calling.")
     return llm  # type: ignore[return-value]
+
+
+def _result_count(content: str) -> int | None:
+    """How many items a tool returned (hits, issues, files), for progress displays."""
+    try:
+        result = json.loads(content).get("result") or {}
+    except (ValueError, AttributeError):
+        return None
+    for key in ("hits", "items", "files"):
+        if isinstance(result.get(key), list):
+            return len(result[key])
+    return 1 if result else None
 
 
 def _answer_section(text: str, heading: str) -> str:
