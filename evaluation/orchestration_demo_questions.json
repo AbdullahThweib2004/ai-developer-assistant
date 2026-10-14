@@ -1,0 +1,27 @@
+[
+  {"id": "d01", "project": "examples/fastapi-auth-demo", "repo": "fastapi/fastapi",
+   "question": "Why do requests to /users/me return 401 even though I send a valid bearer token?",
+   "expected_tools": ["project"], "optional_tools": ["github"],
+   "expected_files": ["app/auth.py"], "expected_issues": [],
+   "expected_bugs": [
+     {"id": "bearer-scheme-case", "all_patterns": ["(?i)case[- ]?(sensitive|insensitive)|lower[- ]?case|\"bearer\"|'bearer'", "(?i)scheme"]},
+     {"id": "secret-env-name", "all_patterns": ["JWT_SECRET_KEY", "JWT_SECRET(?!_KEY)"]}
+   ],
+   "min_bugs": 1},
+  {"id": "d02", "project": "examples/fastapi-auth-demo", "repo": null,
+   "question": "Where does the API read the JWT signing secret from, and does that match the documented setup?",
+   "expected_tools": ["project"], "optional_tools": [],
+   "expected_files": ["app/config.py"], "expected_issues": [],
+   "expected_bugs": [
+     {"id": "secret-env-name", "all_patterns": ["JWT_SECRET_KEY", "JWT_SECRET(?!_KEY)"]}
+   ],
+   "min_bugs": 1},
+  {"id": "d03", "project": "examples/fastapi-auth-demo", "repo": null,
+   "question": "How should clients send the access token, and how does the server parse the Authorization header?",
+   "expected_tools": ["project"], "optional_tools": [],
+   "expected_files": ["app/auth.py"], "expected_issues": [],
+   "expected_bugs": [
+     {"id": "bearer-scheme-case", "all_patterns": ["(?i)case[- ]?(sensitive|insensitive)|lower[- ]?case|\"bearer\"|'bearer'", "(?i)scheme"]}
+   ],
+   "min_bugs": 0}
+]
