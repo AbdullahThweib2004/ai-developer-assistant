@@ -4,12 +4,15 @@ Chat Completions is used (not the Responses API) because it is the API that
 third-party OpenAI-compatible servers implement.
 """
 
+import json
 from typing import Any
 
 import openai
 from pydantic import SecretStr
 
 from app.llm.base import (
+    ChatMessage,
+    ChatResponse,
     LLMAuthError,
     LLMBadRequestError,
     LLMConnectionError,
@@ -20,6 +23,10 @@ from app.llm.base import (
     LLMResponse,
     LLMServerError,
     LLMTimeoutError,
+    LLMToolsUnsupportedError,
+    ToolCall,
+    ToolChoice,
+    ToolSpec,
     log_response,
     timed,
     with_retry,
@@ -27,6 +34,9 @@ from app.llm.base import (
 
 # Local servers such as Ollama ignore the key, but the SDK requires one.
 NO_KEY_PLACEHOLDER = "not-needed"
+# Reasoning fields some gateways (e.g. OpenRouter) return on assistant messages and
+# ask to have sent back unmodified during tool use.
+PASSTHROUGH_FIELDS = ("reasoning", "reasoning_details")
 
 
 class OpenAICompatibleProvider:
@@ -107,6 +117,111 @@ class OpenAICompatibleProvider:
             latency_ms=round(latency_ms, 1),
             stop_reason=choice.finish_reason,
         )
+
+
+    # ---- chat with tools ---------------------------------------------------------
+
+    def chat(
+        self, system: str, messages: list[ChatMessage], tools: list[ToolSpec], tool_choice: ToolChoice = "auto"
+    ) -> ChatResponse:
+        response = with_retry(lambda: self._chat_call(system, messages, tools, tool_choice))
+        log_response(response)
+        return response
+
+    def _chat_call(
+        self, system: str, messages: list[ChatMessage], tools: list[ToolSpec], tool_choice: ToolChoice
+    ) -> ChatResponse:
+        params = self._request_params(system, "")
+        params["messages"] = [{"role": "system", "content": system}, *to_openai_messages(messages)]
+        if tools:  # must be sent on every request of a tool conversation
+            params["tools"] = [{"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.parameters}} for t in tools]
+            params["tool_choice"] = tool_choice
+        try:
+            completion, latency_ms = timed(lambda: self._client.chat.completions.create(**params))
+        except openai.APIError as exc:
+            if tools and _mentions_tool_support(exc):
+                raise LLMToolsUnsupportedError(
+                    f"The model '{self._model}' does not support tool calling. Choose a tool-capable model for "
+                    "LLM_MODEL (on OpenRouter, filter models by supported parameter 'tools')."
+                ) from None
+            raise map_openai_error(exc) from None
+
+        if not completion.choices:
+            raise LLMEmptyResponseError("The model returned no choices.")
+        choice = completion.choices[0]
+        message = choice.message
+        if getattr(message, "refusal", None) or choice.finish_reason == "content_filter":
+            raise LLMRefusalError("The model declined to answer this question.")
+        text = (message.content or "").strip()
+        calls = [_parse_tool_call(c) for c in (message.tool_calls or [])]
+        if not text and not calls:
+            hint = " Increase LLM_MAX_OUTPUT_TOKENS." if choice.finish_reason == "length" else ""
+            raise LLMEmptyResponseError(f"The model returned no text (finish_reason={choice.finish_reason}).{hint}")
+        usage = completion.usage
+        return ChatResponse(
+            text=text, tool_calls=calls, model=completion.model or self._model, provider=self.provider,
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+            latency_ms=round(latency_ms, 1), stop_reason=choice.finish_reason,
+            message=ChatMessage(role="assistant", content=text, tool_calls=calls,
+                                provider_payload=_assistant_payload(message)),
+        )
+
+
+def to_openai_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    """Provider-neutral messages -> Chat Completions format (system message added by the caller)."""
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.role == "tool":
+            out.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": msg.content})
+        elif msg.role == "assistant":
+            if msg.provider_payload is not None:
+                out.append(msg.provider_payload)
+            else:
+                entry: dict[str, Any] = {"role": "assistant", "content": msg.content or None}
+                if msg.tool_calls:
+                    entry["tool_calls"] = [
+                        {"id": c.id, "type": "function",
+                         "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
+                        for c in msg.tool_calls
+                    ]
+                out.append(entry)
+        else:
+            out.append({"role": "user", "content": msg.content})
+    return out
+
+
+def _assistant_payload(message: Any) -> dict[str, Any]:
+    """The assistant message to send back: content, tool calls, and reasoning fields unmodified."""
+    payload: dict[str, Any] = {"role": "assistant", "content": message.content}
+    if message.tool_calls:
+        payload["tool_calls"] = [
+            {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments}}
+            for c in message.tool_calls
+        ]
+    extra = getattr(message, "model_extra", None) or {}
+    for field in PASSTHROUGH_FIELDS:
+        if extra.get(field) is not None:
+            payload[field] = extra[field]
+    return payload
+
+
+def _parse_tool_call(call: Any) -> ToolCall:
+    raw = call.function.arguments or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError:
+        return ToolCall(id=call.id, name=call.function.name, parse_error="arguments are not valid JSON")
+    if not isinstance(args, dict):
+        return ToolCall(id=call.id, name=call.function.name, parse_error="arguments must be a JSON object")
+    return ToolCall(id=call.id, name=call.function.name, arguments=args)
+
+
+def _mentions_tool_support(exc: openai.APIError) -> bool:
+    status = getattr(exc, "status_code", None)
+    text = str(getattr(exc, "message", "")).lower()
+    return status in (400, 404) and "tool" in text and ("support" in text or "endpoint" in text)
 
 
 def map_openai_error(exc: openai.APIError) -> LLMError:

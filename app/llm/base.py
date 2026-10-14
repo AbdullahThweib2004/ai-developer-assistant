@@ -9,9 +9,9 @@ answers and keys are never logged.
 import logging
 import time
 from collections.abc import Callable
-from typing import Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,59 @@ class LLMResponse(BaseModel):
     stop_reason: str | None = None
 
 
+# ---- tool calling ------------------------------------------------------------
+
+
+class ToolSpec(BaseModel):
+    """A tool the model may call: name, description and JSON Schema for its arguments."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class ToolCall(BaseModel):
+    """A tool call requested by the model, with parsed arguments."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    parse_error: str | None = None  # set when the model sent arguments that aren't a JSON object
+
+
+class ChatMessage(BaseModel):
+    """One message in a provider-neutral conversation.
+
+    ``provider_payload`` keeps an assistant message exactly as the provider
+    returned it (e.g. thinking or reasoning blocks), so it can be sent back
+    unchanged on the next request, as the providers require during tool use.
+    """
+
+    role: Literal["user", "assistant", "tool"]
+    content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_call_id: str | None = None  # role="tool": which call this answers
+    is_error: bool = False  # role="tool": the tool failed
+    provider_payload: Any = Field(default=None, exclude=True)
+
+
+class ChatResponse(BaseModel):
+    """A normalized chat turn: text and/or tool calls, plus usage."""
+
+    text: str
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    model: str
+    provider: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    latency_ms: float
+    stop_reason: str | None = None
+    message: ChatMessage  # the assistant message to append to the conversation
+
+
+ToolChoice = Literal["auto", "none"]
+
+
 class LLMProvider(Protocol):
     """Anything that turns a system prompt and a user message into text."""
 
@@ -42,6 +95,14 @@ class LLMProvider(Protocol):
     def model(self) -> str: ...
 
     def generate(self, system: str, user: str) -> LLMResponse: ...
+
+
+class ToolCallingLLM(LLMProvider, Protocol):
+    """A provider that also supports multi-turn chat with tools."""
+
+    def chat(
+        self, system: str, messages: list[ChatMessage], tools: list[ToolSpec], tool_choice: ToolChoice = "auto"
+    ) -> ChatResponse: ...
 
 
 # ---- errors ---------------------------------------------------------------
@@ -69,6 +130,10 @@ class LLMEmptyResponseError(LLMError):
 
 class LLMRefusalError(LLMError):
     """The model declined to answer."""
+
+
+class LLMToolsUnsupportedError(LLMError):
+    """The configured model can't call tools."""
 
 
 class TransientLLMError(LLMError):
@@ -115,10 +180,11 @@ def timed(call: Callable[[], T]) -> tuple[T, float]:
     return result, (time.perf_counter() - started) * 1000
 
 
-def log_response(response: LLMResponse) -> None:
+def log_response(response: LLMResponse | ChatResponse) -> None:
     """Log metadata only, never content."""
+    calls = len(response.tool_calls) if isinstance(response, ChatResponse) else 0
     logger.info(
-        "LLM call provider=%s model=%s input_tokens=%s output_tokens=%s latency_ms=%.0f stop=%s",
+        "LLM call provider=%s model=%s input_tokens=%s output_tokens=%s latency_ms=%.0f stop=%s tool_calls=%d",
         response.provider, response.model, response.input_tokens, response.output_tokens,
-        response.latency_ms, response.stop_reason,
+        response.latency_ms, response.stop_reason, calls,
     )
