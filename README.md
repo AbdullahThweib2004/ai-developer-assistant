@@ -6,11 +6,11 @@ repository's code and documentation, answers questions using the retrieved code 
 cited context, and helps investigate errors. Through an MCP server it works with GitHub
 issues and pull requests, and any write action needs explicit human approval.
 
-> **Status:** Phases 1–5 are complete. You can index a repository and ask cited
-> questions from the CLI or a Streamlit UI. Any MCP client (Claude Desktop, Cursor,
-> MCP Inspector) can search and read indexed projects and look up GitHub repositories,
-> issues and pull requests through a read-only MCP server. Phase 6 (RAG + MCP
-> orchestration) is next.
+> **Status:** Phases 1–6 are complete. An investigating assistant (CLI `investigate` and
+> `chat`, plus a Streamlit tab) decides whether to search the local project, GitHub, both
+> or neither. It runs through a bounded, traced tool-use loop over the project's own MCP
+> server, and every answer has validated citations. Everything is read-only. Phase 7
+> (human-approved issue creation) is next.
 
 ## Key features (planned)
 
@@ -29,8 +29,8 @@ issues and pull requests, and any write action needs explicit human approval.
 | 3 | RAG question answering | ✅ Done |
 | 4 | MCP server | ✅ Done |
 | 5 | GitHub integration (read-only) | ✅ Done |
-| 6 | RAG + MCP orchestration | ⏭️ Next |
-| 7 | Human-approved issue creation | Planned |
+| 6 | RAG + MCP orchestration | ✅ Done |
+| 7 | Human-approved issue creation | ⏭️ Next |
 | 8 | Evaluation, security & documentation | Planned |
 
 ## Architecture
@@ -42,7 +42,10 @@ context, with citations. The same retrieval and file-access code is exposed to e
 MCP clients through a read-only MCP server. One shared set of file rules
 (`FileLoader.check_path`) decides what both ingestion and the MCP server may read. A
 GET-only GitHub client gives the CLI and the MCP server access to issues and pull
-requests on an allowlist of repositories. An orchestration layer comes next.
+requests on an allowlist of repositories. On top, the **orchestrator** runs a bounded
+tool-use loop. It calls the read-only tools through a real MCP client session,
+injects the session's project and repository itself, validates the S/G citations,
+and records a trace.
 
 ```mermaid
 flowchart LR
@@ -63,7 +66,9 @@ flowchart LR
     ui --> ghc
     ghc -->|HTTPS| gh[GitHub REST API]
 
-    orch[Orchestration<br/>Phase 6] -.-> mcp
+    user([Developer]) --> orch[Orchestrator<br/>bounded tool loop]
+    orch -->|tool calling| llm
+    orch -->|MCP client, stdio| mcp
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the detailed design.
@@ -142,6 +147,9 @@ cp .env.example .env
 | `GITHUB_DEFAULT_REPO` | *(none)* | `owner/name` used when no repo is given |
 | `GITHUB_ALLOWED_REPOS` | *(empty)* | Comma-separated allowlist; empty = only the default repo |
 | `GITHUB_API_URL`, `GITHUB_TIMEOUT_SECONDS`, `GITHUB_MAX_RESULTS`, `GITHUB_MAX_PAGES`, `GITHUB_MAX_BODY_CHARS`, `GITHUB_MAX_COMMENTS` | see [docs/github.md](docs/github.md) | Limits for GitHub requests and output |
+| `ORCH_MAX_TOOL_CALLS` / `ORCH_MAX_ITERATIONS` / `ORCH_MAX_GITHUB_CALLS` | `6` / `4` / `3` | Investigation budget per question |
+| `ORCH_TOOL_TIMEOUT_SECONDS` | `30` | Per-tool timeout |
+| `ORCH_MEMORY_TURNS` | `4` | Previous turns kept as context in `chat` / the UI |
 
 ### LLM provider setup
 
@@ -165,7 +173,20 @@ OPENAI_API_KEY=...
 LLM_TEMPERATURE=none             # reasoning models may reject a custom temperature
 ```
 
-**OpenAI-compatible servers** (Groq, OpenRouter, a local Ollama, ...)
+**OpenRouter** (many models behind one OpenAI-compatible API; used for this project's live runs)
+
+```bash
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=anthropic/claude-haiku-5.5     # low cost, supports tool calling (needed for investigate/chat)
+OPENAI_API_KEY=...                       # your OpenRouter key
+LLM_MAX_OUTPUT_TOKENS=4096
+```
+
+`investigate` and `chat` need a model that supports **tool calling**. On OpenRouter,
+filter models by the `tools` parameter. HTTP 402 means the key is out of credits.
+
+**Other OpenAI-compatible servers** (Groq, a local Ollama, ...)
 
 ```bash
 LLM_PROVIDER=openai_compatible
@@ -307,6 +328,51 @@ tools (`get_github_repository`, `search_github_issues`, `get_github_issue`,
 GitHub. See **[docs/github.md](docs/github.md)** for token setup (minimum
 permissions), the allowlist, rate limits and the security model.
 
+### Investigate (orchestrator)
+
+One assistant decides whether a question needs the local project, GitHub, both or
+neither, and then calls read-only tools through the project's MCP server:
+
+```bash
+uv run python -m app.cli investigate --path tests/fixtures/sample_project --repo fastapi/fastapi --trace \
+  "Why does my authentication endpoint return 401 even when I provide a bearer token?"
+uv run python -m app.cli investigate --path . --mode project "How does the MCP server block path traversal?"
+uv run python -m app.cli chat --path tests/fixtures/sample_project --repo fastapi/fastapi   # multi-turn
+```
+
+The answer has these sections: **Summary**, **From the project** `[S#]`, **From
+GitHub** `[G#]` (leads, not proof), **General knowledge**, ranked **Possible causes**
+marked *supported by evidence* or *hypothesis*, **Suggested debugging steps** and
+**Open questions**. Citations are checked against what the tools returned.
+
+`--trace` shows each LLM and tool step with its timing, tokens and error category. The
+trace contains no content. The model never chooses the project or repository: the
+session injects them. The loop is bounded by the `ORCH_*` limits. The Streamlit app
+has the same assistant in its **Investigate** tab, with chat history, separate
+project and GitHub source panels, and the trace. See
+**[docs/orchestration.md](docs/orchestration.md)**.
+
+**Orchestration baseline:** 12 cases written before the first run, on the fixture
+project + `fastapi/fastapi`, with `anthropic/claude-haiku-5.5` and prompt `orch-v1`:
+
+| Metric | Value |
+|---|---|
+| Tool-selection accuracy (project / GitHub / both / none) | 1.00 (12/12) |
+| Unnecessary calls per case | 0.0 |
+| Limit-hit rate | 0.0 |
+| Citation validity | 1.00 |
+| Expected evidence found (9 cases with expectations) | 1.00 |
+| Tool calls / LLM calls per case | 1.8 / 2.2 |
+| Tokens (all 12 cases) | ≈ 183k in / 20k out (≈ $0.03) |
+| Average latency | 11.7 s |
+
+The cases are small and clear-cut, so this is a regression baseline. Harder,
+ambiguous questions belong in a later evaluation round.
+
+```bash
+uv run python evaluation/evaluate_orchestration.py --repo fastapi/fastapi --pause 5
+```
+
 ### Run the tests
 
 ```bash
@@ -412,6 +478,10 @@ ai-developer-assistant/
 │   │   ├── openai_compatible.py  # OpenAI, Groq, OpenRouter, Ollama, ...
 │   │   ├── fake_provider.py    # deterministic, for tests
 │   │   └── factory.py
+│   ├── orchestration/
+│   │   ├── assistant.py        # Investigator: bounded tool loop, injection, citations, trace
+│   │   ├── tool_backends.py    # MCPClientBackend (stdio) / InProcessBackend
+│   │   └── prompts.py          # orch-v1 system prompt
 │   ├── rag/
 │   │   ├── prompts.py          # system prompt (versioned)
 │   │   ├── context_builder.py  # dedup, budget, numbered <source> blocks
@@ -437,7 +507,9 @@ ai-developer-assistant/
 │   ├── questions_self.json     # retrieval questions (this repository)
 │   ├── evaluate_retrieval.py   # Precision@k, Recall@k, MRR
 │   ├── answer_questions.json   # answerable + unanswerable questions
-│   └── evaluate_answers.py     # automatic answer checks + review sheet
+│   ├── evaluate_answers.py     # automatic answer checks + review sheet
+│   ├── orchestration_questions.json  # tool-selection cases (project / GitHub / both / none)
+│   └── evaluate_orchestration.py
 ├── tests/
 │   ├── fixtures/sample_project/  # small fake repository used by tests
 │   └── test_*.py
@@ -445,6 +517,7 @@ ai-developer-assistant/
 │   ├── architecture.md
 │   ├── mcp.md                  # MCP tools, security model, client setup
 │   ├── github.md               # GitHub token, allowlist, rate limits, tools
+│   ├── orchestration.md        # tool loop, limits, untrusted content, trace, memory
 │   └── pending_llm_checks.md   # checks to run once an LLM key is set
 ├── .env.example
 ├── pyproject.toml
@@ -459,6 +532,7 @@ ai-developer-assistant/
 - **Know where your code goes.** Answering a question sends the retrieved chunks to the configured LLM provider. Use a local Ollama model if the code must not leave your machine. Prompts, retrieved code and answers are never written to logs.
 - **Human approval for write actions.** Creating issues, comments or pull requests always needs explicit confirmation from the user.
 - **Retrieved content is untrusted.** Text from indexed files or GitHub is treated as data, never as instructions. Sources are wrapped in `<source>` tags, tag-like text inside them is escaped, and the system prompt tells the model to ignore instructions found in sources.
+- **The model never picks the target.** In investigations, the project path and GitHub repository are fixed by the session and injected into tool calls. The model only sees read-only tools, within a fixed budget.
 - **Citations are verified.** Every `[Sx]` in an answer is checked against the sources actually sent, and unknown citations are reported.
 - **Respects `.assistantignore`.** An optional `.assistantignore` at the project root (same syntax as `.gitignore`) excludes files from the assistant only, without changing git. This repository uses it to keep `evaluation/` out of its own index.
 - **Respects `.gitignore`.** Files ignored by the repository's `.gitignore` files (root and nested, including `!` negations) are not indexed. Built-in exclusions still apply to repositories without a `.gitignore`.
