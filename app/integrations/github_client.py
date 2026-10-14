@@ -411,6 +411,16 @@ class GitHubClient:
             ))
         return comments
 
+    def list_issues(
+        self, repo: RepoRef, state: State = "open", limit: int = 100, sort: Literal["created", "updated"] = "created"
+    ) -> list[IssueSummary]:
+        """Recent issues (not PRs), newest first. Unlike search, this has no indexing delay."""
+        limit = max(1, min(limit, 100))
+        items, _, _ = self._get_paginated(
+            f"/repos/{repo.full_name}/issues", {"state": state, "sort": sort, "direction": "desc"}, limit
+        )
+        return [self._issue_summary(i) for i in items if "pull_request" not in i]
+
     def list_pull_requests(self, repo: RepoRef, state: State = "open", limit: int | None = None) -> PullRequestList:
         limit = self._limit(limit)
         items, truncated, _ = self._get_paginated(f"/repos/{repo.full_name}/pulls", {"state": state}, limit)
