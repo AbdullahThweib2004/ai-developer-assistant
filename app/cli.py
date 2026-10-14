@@ -9,6 +9,8 @@ Usage:
     python -m app.cli github repo|search|issue|prs|pr ... [--repo owner/name]   (read-only)
     python -m app.cli investigate --path ./repo [--repo owner/name] [--mode auto|project|github] [--trace] "question"
     python -m app.cli chat --path ./repo [--repo owner/name] [--mode ...]
+    python -m app.cli investigate ... --propose-issue [--issue-repo owner/name]   (human approval required)
+    python -m app.cli github draft-issue --repo owner/name --title "..." --body-file body.md
 """
 
 import argparse
@@ -17,6 +19,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from app.actions.approval import ApprovalError, IssueApprovalService, SubmissionResult
+from app.actions.issue_draft import IssueDraft, manual_draft
 from app.config import Settings, get_settings
 from app.integrations.github_client import GitHubClient, resolve_repo
 from app.integrations.github_errors import GitHubError
@@ -30,8 +34,10 @@ from app.orchestration.assistant import (
     OrchestrationConfigError,
     SessionConfig,
     build_tool_llm,
+    draft_from_answer,
     unwrap_untrusted,
 )
+from app.integrations.github_write_client import write_allowed_repos
 from app.orchestration.tool_backends import InProcessBackend, MCPClientBackend, ToolBackend
 from app.rag.answer_generator import Answer, AnswerGenerator
 from app.retrieval.indexer import IndexReport, build_index, index_stats
@@ -284,6 +290,68 @@ def format_investigation(result: InvestigationResult, show_trace: bool = False) 
     return "\n".join(lines)
 
 
+# ---- human approval (issue creation) ------------------------------------------------------
+
+
+def format_draft(draft: IssueDraft) -> str:
+    bar = "=" * 72
+    lines = [bar, f"DRAFT GITHUB ISSUE (nothing has been created)   draft {draft.draft_id}", bar,
+             f"Destination repository: {draft.repo}", f"Title: {draft.title}",
+             f"Labels: {', '.join(draft.labels) or '-'}", f"Draft hash: {draft.draft_hash[:16]}…", "-" * 72,
+             draft.body.rstrip(), "-" * 72]
+    for warning in draft.warnings:
+        lines.append(f"note: {warning}")
+    for error in draft.errors:
+        lines.append(f"BLOCKED: {error}")
+    return "\n".join(lines)
+
+
+def format_submission(result: SubmissionResult) -> str:
+    if result.status == "created":
+        return f"Created issue #{result.number}: {result.html_url}"
+    lines = [f"Issue NOT confirmed as created (status: {result.status}, {result.error_category or '-'}): {result.message}"]
+    for match in result.possible_matches:
+        lines.append(f"  possible match: #{match.number} {match.title} {match.html_url}")
+    return "\n".join(lines)
+
+
+def approval_prompt(service: IssueApprovalService, draft: IssueDraft, ask=input) -> SubmissionResult | None:  # type: ignore[no-untyped-def]
+    """Show the draft and create it only if the human types the repository name exactly."""
+    print(format_draft(draft))
+    if not draft.valid:
+        print("This draft can't be approved until the problems above are fixed. Nothing was created.")
+        service.cancel(draft.draft_id)
+        return None
+    typed = ask(f"\nTo create this issue, type the repository name ({draft.repo}). Anything else cancels: ")
+    try:
+        approval = service.approve(draft.draft_id, typed)
+    except ApprovalError as exc:
+        print(f"{exc} Nothing was created.")
+        return None
+    result = service.submit(approval.approval_id)
+    if result.status == "needs_confirmation":
+        print(f"\n{result.message}")
+        for issue in result.similar_issues:
+            print(f"  #{issue.number} ({issue.similarity:.0%} similar) {issue.title}\n      {issue.html_url}")
+        again = ask("Type 'create anyway' to create it regardless. Anything else cancels: ")
+        if again.strip() != "create anyway":
+            service.cancel(draft.draft_id)
+            print("Cancelled. Nothing was created.")
+            return None
+        result = service.submit(approval.approval_id, confirm_similar=True)
+    print(format_submission(result))
+    return result
+
+
+def default_issue_repo(settings: Settings, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    repos = write_allowed_repos(settings)
+    if len(repos) != 1:
+        raise OrchestrationConfigError("Pass --issue-repo (GITHUB_WRITE_ALLOWED_REPOS must name exactly one default).")
+    return repos[0].full_name
+
+
 def open_investigation(args: argparse.Namespace, settings: Settings) -> tuple[Investigator, ToolBackend]:
     """The investigator for the session given on the command line (tools via a real MCP session by default)."""
     project = settings.project_root
@@ -292,7 +360,8 @@ def open_investigation(args: argparse.Namespace, settings: Settings) -> tuple[In
         InProcessBackend(settings, project) if args.backend == "inprocess" else MCPClientBackend(settings, project)
     )
     try:
-        session = SessionConfig(project_path=project, repo=args.repo, mode=args.mode)
+        issue_repo = default_issue_repo(settings, args.issue_repo) if getattr(args, "propose_issue", False) else None
+        session = SessionConfig(project_path=project, repo=args.repo, mode=args.mode, issue_repo=issue_repo)
         return Investigator(settings, llm, backend, session), backend
     except Exception:
         backend.close()
@@ -302,9 +371,29 @@ def open_investigation(args: argparse.Namespace, settings: Settings) -> tuple[In
 def cmd_investigate(args: argparse.Namespace, settings: Settings) -> None:
     investigator, backend = open_investigation(args, settings)
     try:
-        print(format_investigation(investigator.ask(args.question), show_trace=args.trace))
+        result = investigator.ask(args.question)
     finally:
         backend.close()
+    print(format_investigation(result, show_trace=args.trace))
+    if not args.propose_issue:
+        return
+    service = IssueApprovalService(settings, channel="cli", project_root=investigator.project)
+    draft = result.issue_draft
+    if draft is None:
+        answer = input("\nNo issue draft was prepared. Prepare one from this answer? [y/N] ")
+        if answer.strip().lower() != "y":
+            print("No draft. Nothing was created.")
+            return
+        draft = draft_from_answer(settings, result, investigator.issue_repo or "", investigator.project)
+    approval_prompt(service, service.add_draft(draft))
+
+
+def cmd_draft_issue(args: argparse.Namespace, settings: Settings) -> None:
+    body = args.body_file.read_text(encoding="utf-8")
+    repo = default_issue_repo(settings, args.repo)
+    service = IssueApprovalService(settings, channel="cli", project_root=settings.project_root)
+    draft = service.add_draft(manual_draft(settings, repo, args.title, body, args.label or []))
+    approval_prompt(service, draft)
 
 
 def cmd_chat(args: argparse.Namespace, settings: Settings) -> None:
@@ -379,6 +468,13 @@ def build_parser() -> argparse.ArgumentParser:
         return cmd
 
     add_github("repo", "Repository metadata")
+    draft_issue = github_sub.add_parser("draft-issue", help="Draft an issue and create it after your approval")
+    draft_issue.add_argument("--repo", help="Destination owner/name (must be in GITHUB_WRITE_ALLOWED_REPOS)")
+    draft_issue.add_argument("--title", required=True)
+    draft_issue.add_argument("--body-file", type=Path, required=True, help="Markdown file with the issue body")
+    draft_issue.add_argument("--label", action="append", help="Label (repeatable)")
+    draft_issue.add_argument("-v", "--verbose", action="store_true")
+    draft_issue.set_defaults(handler=cmd_draft_issue, path=None)
     search = add_github("search", "Search issues and pull requests")
     search.add_argument("text", help="Search words, e.g. an error message")
     search.add_argument("--state", choices=["open", "closed", "all"], default="all")
@@ -403,6 +499,9 @@ def build_parser() -> argparse.ArgumentParser:
     investigate = add_command("investigate", "Investigate a question with project and GitHub tools")
     investigate.add_argument("question")
     add_session_args(investigate)
+    investigate.add_argument("--propose-issue", action="store_true",
+                             help="Let the assistant draft a GitHub issue; you review it and approve or cancel")
+    investigate.add_argument("--issue-repo", help="Destination for the draft (default: the only write-allowed repo)")
     investigate.set_defaults(handler=cmd_investigate)
 
     chat = add_command("chat", "Interactive multi-turn investigation")
@@ -421,7 +520,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = get_settings(**overrides)
         args.handler(args, settings)
-    except (ValueError, NotADirectoryError, VectorStoreError, LLMError, GitHubError, OrchestrationConfigError) as exc:
+    except (ValueError, NotADirectoryError, VectorStoreError, LLMError, GitHubError, OrchestrationConfigError,
+            ApprovalError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0
