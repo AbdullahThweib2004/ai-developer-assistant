@@ -1,4 +1,4 @@
-# LLM checks
+# Live checks
 
 The Phase 3 checks that need a real LLM provider have been run (model
 `anthropic/claude-haiku-5.5` via OpenRouter, prompt `rag-v1`). The results are in the

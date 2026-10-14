@@ -518,7 +518,7 @@ ai-developer-assistant/
 │   ├── mcp.md                  # MCP tools, security model, client setup
 │   ├── github.md               # GitHub token, allowlist, rate limits, tools
 │   ├── orchestration.md        # tool loop, limits, untrusted content, trace, memory
-│   └── pending_llm_checks.md   # checks to run once an LLM key is set
+│   └── pending_live_checks.md   # checks to run once an LLM key is set
 ├── .env.example
 ├── pyproject.toml
 └── uv.lock

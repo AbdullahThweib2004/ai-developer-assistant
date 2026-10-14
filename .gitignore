@@ -37,3 +37,6 @@ mcp-inspector.json
 
 # Keep the test fixture's fake virtualenv under version control (it is not a real venv)
 !tests/fixtures/sample_project/.venv/
+
+# GitHub write audit log (Phase 7)
+audit/
