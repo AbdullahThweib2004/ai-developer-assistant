@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     mcp_enable_write_tools: bool = False  # expose create_github_issue (with elicitation) to MCP clients
     audit_log_path: Path = Path("./audit/github_writes.jsonl")
 
+    # ---- web app: local conversation history (SQLite, DATA_DIR/conversations.db) ----
+    data_dir: Path = Path("./data")
+
     # ---- Phase 6: orchestration ----
     orch_max_tool_calls: int = Field(default=6, ge=1, le=50)  # tool executions per question
     orch_max_iterations: int = Field(default=4, ge=1, le=20)  # model turns that may call tools
