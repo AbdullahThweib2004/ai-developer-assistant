@@ -66,6 +66,20 @@ how each is mitigated and which tests check it.
 - Tests: `test_token_required_on_every_api_route`, `test_host_header_checked_against_dns_rebinding`,
   `test_cross_origin_requests_refused`, `test_refuses_network_bind_without_flag`.
 
+**Conversation history** (data at rest).
+- The web app stores conversations locally in `DATA_DIR/conversations.db` (SQLite, default
+  `./data`, gitignored; directory mode 700, file mode 600). **History can contain code
+  excerpts** from your projects, the questions you asked and the answers.
+- Before anything is written, text goes through the same secret patterns as issue drafts and
+  matches are replaced with `[redacted]`; the app's own keys and tokens are never stored.
+- Approvals and drafts are never stored: after a restart, an issue must be drafted and
+  approved again. Each conversation is bound to one project, and the server refuses a
+  question whose project doesn't match its conversation.
+- Settings → "Save conversation history" (on by default) keeps new chats in memory only;
+  "Clear history" deletes all saved conversations.
+- Tests: `test_secrets_are_never_stored`, `test_approvals_and_drafts_are_never_stored`,
+  `test_project_mismatch_is_rejected_server_side`, `test_database_file_is_private`.
+
 ## Dependency audit (2026-10-15)
 
 - `npm audit --omit=dev`: 0 vulnerabilities.
@@ -86,3 +100,5 @@ how each is mitigated and which tests check it.
   `127.0.0.1` as the same user can use the API. Don't use `--allow-network` on untrusted networks.
 - Local paths can appear in answers if a file mentions them; only issue drafts are scrubbed.
 - The adversarial evaluation is small (6 cases, one model, one run).
+- The history database is not encrypted; anyone who can read your user's files can read it.
+  Redaction is pattern-based, like the draft scanner.

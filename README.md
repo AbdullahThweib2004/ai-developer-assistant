@@ -365,7 +365,12 @@ Pages (everything shown comes from the project, the index, GitHub or this sessio
   log (metadata only).
 - **Settings**: read-only configuration status (no keys, ever) and the theme.
 
-**Ctrl/Cmd+K** searches the project index, GitHub issues and this session's answers.
+**Ctrl/Cmd+K** searches the project index, GitHub issues and this conversation's answers.
+
+**Conversations** belong to one project and are saved locally (`DATA_DIR/conversations.db`,
+default `./data`, file mode 600) so a reload or a later visit restores them; switching
+project shows that project's own conversations. History can contain code excerpts (keys
+and tokens are redacted); turn it off or clear it in Settings.
 
 The server binds to `127.0.0.1` only (another interface needs `--allow-network` and
 prints a warning), checks `Host` and `Origin`, and requires a per-launch session token

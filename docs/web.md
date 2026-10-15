@@ -47,15 +47,39 @@ All routes are under `/api` and need the session token.
 | GET | `/status` | provider/model, embedding model, GitHub read/write config, limits, demo flag |
 | GET | `/projects` | indexed projects under the allowed roots, with chunk and file counts |
 | POST | `/index` | `{path}`: rebuild the index (SSE) |
-| POST | `/ask` | `{path, question, top_k?, file_types?}`: one-shot RAG answer (SSE) |
-| POST | `/sessions` | `{path, repo?, mode}`: start an investigation session |
-| GET / DELETE | `/sessions/{id}` | read or end a session (stops its MCP server process) |
-| POST | `/investigate` | `{session_id, question}`: run the tool loop (SSE) |
+| POST | `/ask` | `{conversation_id, path, question, top_k?, file_types?}`: one-shot RAG answer (SSE) |
+| GET | `/sessions/{id}` | a conversation's live session (tools, memory size) |
+| POST | `/investigate` | `{conversation_id, path, question, mode?}`: run the tool loop (SSE) |
 | POST | `/sessions/{id}/drafts` | `{turn_id, repo?}`: draft an issue from an answer |
 | GET / PUT | `/drafts/{id}` | read, or edit `{title, body, labels}` (new hash, voids approvals) |
 | GET | `/drafts/{id}/similar` | similar open issues in the destination repo |
 | POST | `/drafts/{id}/approve` | `{draft_hash, typed_repo_confirmation, confirm_similar}` |
 | POST | `/drafts/{id}/cancel` | cancel (audited) |
+
+### Conversations
+
+Every conversation belongs to exactly one project (resolved path) and keeps its GitHub
+repository and mode. They are stored in `DATA_DIR/conversations.db` (SQLite, file mode 600):
+the question, the structured answer (sections, sources, trace metadata, tokens) and the
+outcome of each turn, with secrets redacted. Approvals and drafts are never stored.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/conversations?path=` | conversations of one project, newest first |
+| POST | `/conversations` | `{path, repo, mode}`: create |
+| GET | `/conversations/{id}` | with its messages |
+| PATCH | `/conversations/{id}` | `{title?, mode?}`: rename, change mode |
+| DELETE | `/conversations/{id}` | delete one |
+| DELETE | `/conversations?path=` | clear a project's conversations |
+| DELETE | `/history` | clear all |
+| GET / PUT | `/history/settings` | `{save_history}` (off: new chats stay in memory) |
+
+`/ask` and `/investigate` take `{conversation_id, path, question}` (`/investigate` also an
+optional one-off `mode`). The server refuses (`409 conversation_mismatch`) when the
+conversation belongs to another project. A conversation's live session (MCP server process,
+memory) is created on first use; after a restart its memory is rebuilt from the stored turns,
+labeled as previous conversation (context, not evidence), and new questions still retrieve
+fresh evidence.
 
 Read-only routes for the explore pages (`app/web/explore.py`). They reuse `ProjectTools` and
 `GitHubTools`, so the MCP project allowlist, the ingestion file rules and the GitHub read
@@ -139,12 +163,14 @@ No key is read and no request leaves the machine.
 ## Frontend
 
 The UI follows a light-first design: a lavender canvas with the app as one white
-rounded container. It has a sidebar (navigation and a Workspace card with the real index
-status and live progress), a top bar (project selector, read-only git branch, the
+rounded container. It has a sidebar (navigation, the current project's Conversations with
+New chat / rename / delete, and a Workspace card with the real index status and live progress), a top bar (project selector, read-only git branch, the
 Ctrl/Cmd+K search and a GitHub status pill that also picks the repository) and the
 pages. Routing is client-side over the History API; the server serves `index.html` for
-every page path. The session (messages, project, repository, mode) lives in one store
-and survives page changes, not page reloads.
+every page path. A conversation has its own URL (`/chat/:id`), so a reload or a later
+visit restores it; the last active conversation per project is remembered (localStorage).
+Switching project stops a running request and shows that project's last conversation, or
+an empty one; switching back restores the previous conversation exactly as it was.
 
 | Page | Path | Data |
 |---|---|---|
