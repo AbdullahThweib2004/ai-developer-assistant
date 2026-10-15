@@ -12,6 +12,7 @@ from app.config import Settings
 from app.integrations.github_client import GitHubClient
 from app.integrations.github_write_client import GitHubWriteClient
 from app.llm.fake_provider import FakeLLMProvider, FakeToolCalls
+from app.mcp_server.tools.github_tools import GitHubTools
 from app.orchestration.tool_backends import InProcessBackend
 from app.retrieval.embeddings import FakeEmbeddingProvider
 from app.retrieval.indexer import build_index
@@ -55,7 +56,8 @@ class Harness:
                 write_client_factory=lambda: GitHubWriteClient(
                     settings, transport=transport, read_client_factory=lambda: GitHubClient(settings, transport=transport)),
                 read_client_factory=lambda: GitHubClient(settings, transport=transport)),
-            make_embeddings=FakeEmbeddingProvider)
+            make_embeddings=FakeEmbeddingProvider,
+            make_github=lambda: GitHubTools(settings, transport=transport))
         self.security = LocalSecurity(port=8765)
         self.client = TestClient(create_app(runtime, self.security), base_url=BASE)
         self.headers = {"X-Session-Token": self.security.token}
