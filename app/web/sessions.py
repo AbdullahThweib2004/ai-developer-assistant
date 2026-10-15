@@ -16,6 +16,7 @@ from app.actions.approval import IssueApprovalService
 from app.actions.issue_draft import IssueDraft
 from app.config import Settings
 from app.llm.base import ToolCallingLLM
+from app.mcp_server.tools.github_tools import GitHubTools
 from app.orchestration.assistant import InvestigationResult, Investigator, Mode, SessionConfig, build_tool_llm
 from app.orchestration.tool_backends import MCPClientBackend, ToolBackend
 from app.retrieval.embeddings import EmbeddingProvider, get_embedding_provider
@@ -32,10 +33,12 @@ class Runtime:
     make_backend: Callable[[Path], ToolBackend]
     make_approvals: Callable[[Path], IssueApprovalService]
     make_embeddings: Callable[[], EmbeddingProvider]
+    make_github: Callable[[], GitHubTools] | None = None  # read-only explore pages
     demo: bool = False
     index_event_delay: float = 0.0  # demo mode slows progress events down so they're visible
     _llm: ToolCallingLLM | None = None
     _embeddings: EmbeddingProvider | None = None
+    _github: GitHubTools | None = None
 
     @property
     def llm(self) -> ToolCallingLLM:
@@ -48,6 +51,12 @@ class Runtime:
         if self._embeddings is None:
             self._embeddings = self.make_embeddings()  # one model per process, loaded on first use
         return self._embeddings
+
+    @property
+    def github(self) -> GitHubTools:
+        if self._github is None:
+            self._github = self.make_github() if self.make_github else GitHubTools(self.settings)
+        return self._github
 
 
 def real_runtime(settings: Settings) -> Runtime:

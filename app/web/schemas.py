@@ -71,6 +71,7 @@ class SourceOut(BaseModel):
     location: str | None = None
     score: float | None = None
     start_line: int | None = None
+    end_line: int | None = None
     language: str | None = None
     excerpt: str | None = None  # untrusted content, unwrapped for display (the UI marks it as quoted)
     repo: str | None = None
@@ -86,24 +87,47 @@ LANGUAGES = {".py": "python", ".md": "markdown", ".json": "json", ".yaml": "yaml
              ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".toml": "ini", ".txt": "plaintext"}
 
 
-def _start_line(settings: Settings, project: Path, src: EvidenceSource) -> int | None:
-    """Line number of a chunk's first line, read through the shared path rules."""
-    if not src.location:
-        return None
-    lines = re.match(r"lines (\d+)-", src.location)
+def line_info(settings: Settings, project: Path, file_path: str | None,
+              location: str | None) -> tuple[int | None, int | None, bool]:
+    """First and last line of a source, and whether it starts mid-line.
+
+    Parsed from "lines a-b", or converted from "chars a-b" by reading the file through
+    the shared path rules (FileLoader.check_path).
+    """
+    if not location:
+        return None, None, False
+    lines = re.match(r"lines (\d+)-(\d+)", location)
     if lines:
-        return int(lines.group(1))
-    chars = re.match(r"chars (\d+)-", src.location)
-    if not chars or not src.file_path:
-        return None
+        return int(lines.group(1)), int(lines.group(2)), False
+    chars = re.match(r"chars (\d+)-(\d+)", location)
+    if not chars or not file_path:
+        return None, None, False
     loader = FileLoader(settings.model_copy(update={"project_root": project}), root=project)
-    if loader.check_path(src.file_path)[0] is not None:
-        return None
+    if loader.check_path(file_path)[0] is not None:
+        return None, None, False
     try:
-        text = (project / src.file_path).read_text(encoding="utf-8", errors="replace")
+        text = (project / file_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return None
-    return text[: int(chars.group(1))].count("\n") + 1
+        return None, None, False
+    start, end = int(chars.group(1)), int(chars.group(2))
+    first = text[:start].count("\n") + 1
+    last = text[:max(start, end - 1)].count("\n") + 1  # end is exclusive
+    partial = 0 < start <= len(text) and text[start - 1] != "\n"
+    return first, max(first, last), partial
+
+
+def line_range(settings: Settings, project: Path, file_path: str | None,
+               location: str | None) -> tuple[int | None, int | None]:
+    start, end, _ = line_info(settings, project, file_path, location)
+    return start, end
+
+
+def trim_partial_line(excerpt: str | None, start: int | None, end: int | None,
+                      partial: bool) -> tuple[str | None, int | None]:
+    """Chunks can start mid-line: for display, drop that fragment and start at the next full line."""
+    if not partial or not excerpt or start is None or "\n" not in excerpt or (end is not None and start >= end):
+        return excerpt, start
+    return excerpt.split("\n", 1)[1], start + 1
 
 
 def source_out(src: EvidenceSource, settings: Settings, project: Path | None) -> SourceOut:
@@ -113,10 +137,12 @@ def source_out(src: EvidenceSource, settings: Settings, project: Path | None) ->
     title = None
     if src.kind == "github" and ": " in src.label:
         title = unwrap_untrusted(src.label.split(": ", 1)[1])
+    start, end, partial = line_info(settings, project, src.file_path, src.location) \
+        if project and src.kind == "project" else (None, None, False)
+    excerpt, start = trim_partial_line(excerpt, start, end, partial)
     return SourceOut(
         cite_id=src.cite_id, kind=src.kind, label=src.label, cited=src.cited, file_path=src.file_path,
-        location=src.location, score=src.score,
-        start_line=_start_line(settings, project, src) if project and src.kind == "project" else None,
+        location=src.location, score=src.score, start_line=start, end_line=end,
         language=LANGUAGES.get(Path(src.file_path).suffix.lower()) if src.file_path else None,
         excerpt=excerpt, repo=src.repo, number=src.number, url=src.url, is_pull_request=src.is_pull_request,
         state=src.state, labels=src.labels, title=title,

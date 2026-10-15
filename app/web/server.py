@@ -21,7 +21,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
-from app.web.api import build_router
+from app.web.api import build_router, http_error
+from app.web.explore import build_explore_router
 from app.web.security import LocalSecurity
 from app.web.sessions import Runtime, SessionManager, real_runtime
 
@@ -80,6 +81,7 @@ def create_app(runtime: Runtime, security: LocalSecurity, frontend_dist: Path = 
                                         "hint": "Check the server log."}}, status_code=500)
 
     app.include_router(build_router(sessions))
+    app.include_router(build_explore_router(sessions, http_error))
 
     index_file = frontend_dist / "index.html"
 

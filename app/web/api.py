@@ -11,6 +11,7 @@ name; approvals stay single-use, expiring and hash-bound; one attempt per draft.
 """
 
 import asyncio
+from collections import Counter
 import logging
 import platform
 import queue
@@ -29,6 +30,7 @@ from fastapi.responses import StreamingResponse
 
 from app.actions.approval import ApprovalError
 from app.config import Settings
+from app.ingestion.document_parser import file_type_for
 from app.integrations.github_client import allowed_repos, resolve_repo
 from app.integrations.github_errors import (
     GitHubError,
@@ -53,6 +55,7 @@ from app.retrieval.indexer import build_index, index_stats
 from app.retrieval.retriever import InvalidQueryError
 from app.retrieval.vector_store import EmbeddingModelMismatchError, ProjectNotIndexedError, VectorStoreError
 from app.web import schemas
+from app.web.explore import display_path
 from app.web.security import validate_project
 from app.web.sessions import SessionManager
 
@@ -187,7 +190,7 @@ def build_router(sessions: SessionManager) -> APIRouter:
     runtime = sessions.runtime
     settings: Settings = runtime.settings
     router = APIRouter(prefix="/api")
-    indexed_paths: set[Path] = set()
+    indexed_paths: dict[Path, float] = {}  # indexed in this server run -> when
 
     def project_for(path: str) -> Path:
         try:
@@ -248,6 +251,7 @@ def build_router(sessions: SessionManager) -> APIRouter:
                 candidates += nxt
                 level = nxt
         candidates += list(indexed_paths)
+        roots = [Path(r).resolve() for r in settings.mcp_allowed_roots]
         demo_default = settings.project_root.resolve() if runtime.demo else None
         for path in candidates:
             if path in found:
@@ -257,12 +261,15 @@ def build_router(sessions: SessionManager) -> APIRouter:
             except ProjectNotIndexedError:
                 if path == demo_default:
                     found[path] = {"path": str(path), "name": path.name, "indexed": False, "chunks": 0,
-                                   "files": 0, "model": None}
+                                   "files": 0, "model": None, "display_path": display_path(path, roots),
+                                   "indexed_at": None}
                 continue
             except Exception:  # noqa: BLE001
                 continue
             found[path] = {"path": str(path), "name": path.name, "indexed": True, "chunks": stats.chunk_count,
-                           "files": len(stats.files), "model": stats.model_name, "file_list": stats.files[:500]}
+                           "files": len(stats.files), "model": stats.model_name, "file_list": stats.files[:500],
+                           "display_path": display_path(path, roots), "indexed_at": indexed_paths.get(path),
+                           "file_types": dict(Counter(file_type_for(Path(f)) for f in stats.files).most_common())}
         return {"projects": sorted(found.values(), key=lambda p: (not p["indexed"], p["name"]))}
 
     @router.post("/index")
@@ -273,12 +280,19 @@ def build_router(sessions: SessionManager) -> APIRouter:
             emit("started", {"path": str(project), "name": project.name})
             report = build_index(project, rebuild=True, settings=settings_for(project), provider=runtime.embeddings,
                                  progress=lambda e: emit("progress", e))
-            indexed_paths.add(project)
+            indexed_paths[project] = time.time()
             emit("done", {"files_indexed": report.files_indexed, "chunks_indexed": report.chunks_indexed,
                           "files_skipped": report.files_skipped, "chunks_per_file_type": report.chunks_per_file_type,
                           "duration_seconds": report.duration_seconds, "model": report.model_name})
 
         return stream(request, work, delay=runtime.index_event_delay)
+
+    def quick_source(src: Any, project: Path) -> dict[str, Any]:
+        start, end, partial = schemas.line_info(settings_for(project), project, src.file_path,
+                                                f"chars {src.start_char}-{src.end_char}")
+        data = src.model_dump()
+        data["content"], start = schemas.trim_partial_line(data.get("content"), start, end, partial)
+        return {**data, "start_line": start, "end_line": end}
 
     @router.post("/ask")
     def ask(body: schemas.AskRequest, request: Request) -> StreamingResponse:
@@ -292,7 +306,7 @@ def build_router(sessions: SessionManager) -> APIRouter:
             emit("answer", {
                 "answer_markdown": answer.answer_text, **schemas.parse_answer(answer.answer_text),
                 "insufficient_evidence": answer.insufficient_evidence, "invalid_citations": answer.invalid_citations,
-                "sources": [s.model_dump() for s in answer.context_sources],
+                "sources": [quick_source(s, project) for s in answer.context_sources],
                 "cited": [s.source_id for s in answer.cited_sources], "suggestions": answer.suggestions,
                 "model": answer.model, "input_tokens": answer.input_tokens, "output_tokens": answer.output_tokens,
                 "latency": answer.latency.model_dump(), "prompt_version": answer.prompt_version,

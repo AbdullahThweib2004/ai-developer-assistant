@@ -26,6 +26,7 @@ from app.config import Settings
 from app.integrations.github_client import GitHubClient
 from app.integrations.github_write_client import GitHubWriteClient
 from app.llm.base import ChatMessage, ChatResponse, LLMResponse, ToolCall, ToolChoice, ToolSpec
+from app.mcp_server.tools.github_tools import GitHubTools
 from app.orchestration.tool_backends import InProcessBackend
 from app.retrieval.embeddings import FakeEmbeddingProvider
 from app.web.sessions import Runtime
@@ -101,9 +102,12 @@ def demo_github_transport() -> httpx.MockTransport:
     def handle(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/search/issues":
+            words = [w for w in re.findall(r"[a-z0-9]+", request.url.params.get("q", "").lower())
+                     if ":" not in w and w not in {"repo", "fastapi", "is", "issue", "pr", "state", "open", "closed"}]
+            items = [i for i in DEMO_ISSUES
+                     if not words or any(w in (i["title"] + " " + i["body"]).lower() for w in words)]
             return httpx.Response(200, headers={**_RATE, "x-ratelimit-resource": "search"},
-                                  json={"total_count": len(DEMO_ISSUES), "incomplete_results": False,
-                                        "items": DEMO_ISSUES})
+                                  json={"total_count": len(items), "incomplete_results": False, "items": items})
         if path == f"/repos/{DEMO_REPO}":
             return httpx.Response(200, headers=_RATE, json={
                 "full_name": DEMO_REPO, "description": "FastAPI framework, high performance, easy to learn",
@@ -128,6 +132,14 @@ def demo_github_transport() -> httpx.MockTransport:
             data.update({"merged": True, "base": {"ref": "master"}, "head": {"ref": "security-401"},
                          "commits": 3, "additions": 120, "deletions": 40, "changed_files": 6})
             return httpx.Response(200, headers=_RATE, json=data)
+        if path == f"/repos/{DEMO_REPO}/issues":
+            return httpx.Response(200, headers=_RATE, json=DEMO_ISSUES)
+        if path == f"/repos/{DEMO_REPO}/pulls":
+            state = request.url.params.get("state", "open")
+            pulls = [{**i, "draft": False, "merged_at": i["updated_at"], "base": {"ref": "master"},
+                      "head": {"ref": "security-401"}} for i in DEMO_ISSUES
+                     if "pull_request" in i and state in ("all", i["state"])]
+            return httpx.Response(200, headers=_RATE, json=pulls)
         if path == f"/repos/{DEMO_WRITE_REPO}/issues":
             if request.method == "POST":  # a mock; nothing leaves this process
                 return httpx.Response(201, json={"number": 42, "html_url": f"https://github.com/{DEMO_WRITE_REPO}/issues/42"})
@@ -306,6 +318,7 @@ def demo_runtime(repo_root: Path) -> Runtime:
                                                       github_transport=github),
         make_approvals=approvals,
         make_embeddings=FakeEmbeddingProvider,
+        make_github=lambda: GitHubTools(settings, transport=github),
         demo=True,
         index_event_delay=0.35,
     )
