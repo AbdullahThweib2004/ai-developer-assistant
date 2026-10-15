@@ -13,6 +13,9 @@ export async function ready(page: Page, navigate = true) {
   }
   await expect(page.getByTestId("index-button")).toHaveText(/Rebuild index/);
   await expect(page.getByText("Index ready")).toBeHidden({ timeout: 10_000 }); // toast gone
+  // History persists on the demo server across tests: start from an empty chat.
+  await page.getByTestId("new-chat").click();
+  await expect(page.getByTestId("empty-state")).toBeVisible();
 }
 
 /** Client-side navigation through the sidebar (keeps this session's state). */
