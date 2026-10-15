@@ -40,3 +40,11 @@ mcp-inspector.json
 
 # GitHub write audit log (Phase 7)
 audit/
+
+# Web frontend
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/playwright/.cache/
