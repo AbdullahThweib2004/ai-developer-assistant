@@ -11,6 +11,16 @@ export async function ready(page: Page, navigate = true) {
     await index.click();
     await expect(page.getByText("Index ready")).toBeVisible({ timeout: 30_000 });
   }
-  await expect(index).toHaveText(/Rebuild index/);
+  await expect(page.getByTestId("index-button")).toHaveText(/Rebuild index/);
   await expect(page.getByText("Index ready")).toBeHidden({ timeout: 10_000 }); // toast gone
+}
+
+/** Client-side navigation through the sidebar (keeps this session's state). */
+export async function go(page: Page, label: string) {
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: label, exact: true }).click();
+}
+
+export async function ask401(page: Page) {
+  await page.getByTestId("example-question").filter({ hasText: QUESTION }).click();
+  await expect(page.getByTestId("answer")).toBeVisible({ timeout: 30_000 });
 }
