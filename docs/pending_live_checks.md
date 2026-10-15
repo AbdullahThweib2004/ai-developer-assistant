@@ -11,7 +11,7 @@ uv run python -m app.cli index --path . --rebuild
 uv run python evaluation/evaluate_answers.py
 uv run python -m app.cli ask --path . "How does the chunker avoid infinite loops?"
 uv run python -m app.cli ask --path . "How is a mismatched embedding model detected?"
-uv run python -m app.cli ask --path . "Which CI service runs the tests?"
+uv run python -m app.cli ask --path . "Which cloud provider is this app deployed to in production?"
 ```
 
 Things to check each time:
