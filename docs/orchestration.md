@@ -8,7 +8,7 @@ human approval is Phase 7).
 ```bash
 uv run python -m app.cli investigate --path ./repo [--repo owner/name] [--mode auto|project|github] [--trace] "question"
 uv run python -m app.cli chat --path ./repo [--repo owner/name]      # multi-turn; /reset, /exit
-uv run streamlit run app/ui/streamlit_app.py                         # "Investigate" tab
+uv run ai-dev-assistant web                                          # web app (see docs/web.md)
 ```
 
 ## The loop

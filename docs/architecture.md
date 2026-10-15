@@ -284,7 +284,7 @@ They record the project name, never absolute paths.
 ## Phase 3: RAG question answering
 
 Phase 3 answers questions with one LLM call grounded in retrieved chunks. The
-CLI (`ask`) and the Streamlit UI both call the same
+CLI (`ask`) and the web app (`POST /api/ask`) both call the same
 `AnswerGenerator.answer(question, project_path, top_k, file_types)`.
 
 ```mermaid
@@ -412,12 +412,11 @@ phases that add tools (MCP, GitHub) will need human approval for any write actio
 
 ### UI
 
-[`streamlit_app.py`](../app/ui/streamlit_app.py) only collects input and renders
-results. It calls `build_index`, `index_stats` and `AnswerGenerator`, the same
-functions the CLI uses. The embedding model is cached with
-`st.cache_resource`. Answers are rendered as Markdown with raw HTML disabled
-(Streamlit's default). The server binds to `localhost` through
-`.streamlit/config.toml`.
+The web app ([`app/web/`](../app/web/) + [`frontend/`](../frontend/)) only collects
+input and renders results. It calls `build_index`, `index_stats`, `AnswerGenerator`
+and `Investigator`, the same functions the CLI uses. Answers are rendered as Markdown
+with raw HTML disabled. The server binds to `127.0.0.1` and requires a per-launch
+session token. See [web.md](web.md).
 
 ## Phase 4: MCP server
 
@@ -653,7 +652,7 @@ See [orchestration.md](orchestration.md) for details.
 flowchart LR
     llm[LLM] -->|prepare_github_issue| inv[Investigator]
     inv --> draft[issue_draft.py<br/>template, sanitize, secret scan, hash]
-    draft --> ui[CLI / Streamlit<br/>shows full draft]
+    draft --> ui[CLI / web app<br/>shows full draft]
     ui -->|human types repo name| appr[approval.py<br/>IssueApprovalService]
     appr -->|re-validate, allowlist, similar check,<br/>single attempt| wc[github_write_client.py<br/>POST /repos/o/r/issues only]
     wc -->|write token| gh[(GitHub)]

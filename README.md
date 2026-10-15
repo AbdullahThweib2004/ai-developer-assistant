@@ -7,7 +7,7 @@ cited context, and helps investigate errors. Through an MCP server it works with
 issues and pull requests, and any write action needs explicit human approval.
 
 > **Status:** Phases 1–7 are complete. An investigating assistant (CLI `investigate` and
-> `chat`, plus a Streamlit tab) decides whether to search the local project, GitHub, both
+> `chat`, plus a local web app) decides whether to search the local project, GitHub, both
 > or neither. It runs through a bounded, traced tool-use loop over the project's own MCP
 > server, and every answer has validated citations. It can **draft** a GitHub issue from
 > its findings; the issue is created only after you approve the exact draft. Phase 8
@@ -58,7 +58,7 @@ flowchart LR
     chroma --> retriever[Retriever]
     retriever --> rag[RAG answer generator]
     rag --> llm[LLM]
-    rag --> ui[CLI / Streamlit]
+    rag --> ui[CLI / web app]
 
     client([MCP client<br/>Claude Desktop, Cursor, Inspector]) <-->|stdio| mcp[MCP server<br/>read-only tools]
     mcp --> retriever
@@ -88,7 +88,8 @@ See [docs/architecture.md](docs/architecture.md) for the detailed design.
 - **sentence-transformers** (`all-MiniLM-L6-v2`): local embeddings
 - **Chroma**: persistent vector store (cosine similarity)
 - **Anthropic** and **OpenAI** Python SDKs: LLM providers (the OpenAI SDK also covers Groq, OpenRouter and Ollama)
-- **Streamlit**: web UI
+- **FastAPI** + **uvicorn**: local web API (SSE streaming)
+- **React + TypeScript + Vite + Tailwind CSS**: web frontend (`frontend/`)
 - **pathspec**: `.gitignore` matching
 - **pytest**: tests
 - **MCP Python SDK** (`mcp`): MCP server and test client
@@ -281,23 +282,54 @@ The LLM can also flag insufficient evidence itself. Citations that don't match a
 provided source (e.g. `[S9]` when only S1–S5 were sent) are listed as invalid
 citations, not hidden.
 
-### Web UI
+### Web app
+
+![Investigation with evidence panel (dark)](docs/images/dark-answer.png)
+
+A local web app over the same code the CLI uses. Try it with no keys and no network:
 
 ```bash
-uv run streamlit run app/ui/streamlit_app.py
+cd frontend && npm install && npm run build && cd ..
+uv run ai-dev-assistant web --demo        # http://127.0.0.1:8765
 ```
 
-The sidebar has the project path, an **Index / Rebuild** button with the indexing
-report, index stats, `top_k`, a file-type filter and the active provider/model (never
-keys). The main area shows the answer, the cited sources and expandable panels with
-each retrieved chunk and its score. The UI calls the same answer generator as the CLI.
-It only listens on `localhost` (see `.streamlit/config.toml`).
+`--demo` uses fake embeddings, a scripted LLM and mocked GitHub against
+`examples/fastapi-auth-demo`, so nothing costs money and no issue is ever created.
+For real use (your `.env` settings), drop `--demo`:
+
+```bash
+uv run ai-dev-assistant web               # or: uv run python -m app.web
+```
+
+Layout: a sidebar (project switcher with index status, **Index / Rebuild** with live
+progress, GitHub repo from the read allowlist, Auto/Project/GitHub mode, model status),
+the chat (live tool steps, answers split into sections, ranked possible causes marked
+**Evidence** or **Hypothesis**, citation chips with hover previews) and an
+**Evidence** panel (Sources with highlighted code, GitHub issues, and the Trace).
+**Prepare GitHub issue** opens the approval drawer described below.
+
+The server binds to `127.0.0.1` only (another interface needs `--allow-network` and
+prints a warning), checks `Host` and `Origin`, and requires a per-launch session token
+on every API call. Details, API and SSE events: **[docs/web.md](docs/web.md)**.
+
+Frontend development with hot reload (two terminals):
+
+```bash
+uv run ai-dev-assistant web --dev --demo  # API on :8765, allows the Vite origin
+cd frontend && npm run dev                # http://localhost:5173
+```
 
 #### Screenshots
 
-> _Screenshots of the UI will be added here._
->
-> `docs/images/ui-answer.png`: an answer with cited sources
+| | Dark | Light |
+|---|---|---|
+| Empty state | ![](docs/images/dark-empty.png) | ![](docs/images/light-empty.png) |
+| In progress | ![](docs/images/dark-in-progress.png) | ![](docs/images/light-in-progress.png) |
+| Answer + Sources | ![](docs/images/dark-answer.png) | ![](docs/images/light-answer.png) |
+| Trace | ![](docs/images/dark-trace.png) | ![](docs/images/light-trace.png) |
+| Issue draft | ![](docs/images/dark-draft.png) | ![](docs/images/light-draft.png) |
+
+Regenerate with `cd frontend && npm run screenshots` (runs against `--demo`).
 > `docs/images/ui-insufficient.png`: an insufficient-evidence answer
 
 ### MCP server
@@ -359,9 +391,8 @@ marked *supported by evidence* or *hypothesis*, **Suggested debugging steps** an
 
 `--trace` shows each LLM and tool step with its timing, tokens and error category. The
 trace contains no content. The model never chooses the project or repository: the
-session injects them. The loop is bounded by the `ORCH_*` limits. The Streamlit app
-has the same assistant in its **Investigate** tab, with chat history, separate
-project and GitHub source panels, and the trace. See
+session injects them. The loop is bounded by the `ORCH_*` limits. The web app has the
+same assistant, with chat history, live steps, the Evidence panel and the trace. See
 **[docs/orchestration.md](docs/orchestration.md)**.
 
 **Orchestration baseline:** 12 cases written before the first run, on the fixture
@@ -437,9 +468,9 @@ uv run python -m app.cli github draft-issue --repo OWNER/SANDBOX --title "..." -
 5. Every approval, cancellation and result is appended to `audit/github_writes.jsonl`
    (no body, no token).
 
-The Streamlit **Investigate** tab has the same flow: **Prepare GitHub issue** opens an
-editable draft with a preview, and **Approve and create** asks you to type the repo
-name. Writes use a separate token and allowlist (`GITHUB_WRITE_*`). See
+The web app has the same flow: **Prepare GitHub issue** opens an editable draft with
+a live preview, and **Approve and create** stays disabled until you type the repo name
+exactly (any edit clears it). The server enforces the same checks. Writes use a separate token and allowlist (`GITHUB_WRITE_*`). See
 **[docs/approval.md](docs/approval.md)** for the threat model.
 
 ### Run the tests
@@ -447,6 +478,8 @@ name. Writes use a separate token and allowlist (`GITHUB_WRITE_*`). See
 ```bash
 uv run pytest            # fast suite: fake embeddings, fake LLM, temp Chroma dirs, no network
 uv run pytest -m slow    # also runs the real embedding model and, if configured, the real LLM
+cd frontend && npm test  # Vitest component tests
+cd frontend && npm run e2e   # Playwright end-to-end (starts the --demo server)
 ```
 
 ### Evaluate retrieval
@@ -559,8 +592,13 @@ ai-developer-assistant/
 │   │   ├── prompts.py          # system prompt (versioned)
 │   │   ├── context_builder.py  # dedup, budget, numbered <source> blocks
 │   │   └── answer_generator.py # retrieve -> context -> LLM -> validate citations
-│   ├── ui/
-│   │   └── streamlit_app.py
+│   ├── web/
+│   │   ├── server.py           # FastAPI app, CLI entry, local-only binding
+│   │   ├── api.py              # REST + SSE routes over the existing services
+│   │   ├── security.py         # Host/Origin checks, session token, path allowlist
+│   │   ├── sessions.py         # runtime + per-session investigators and approvals
+│   │   ├── schemas.py          # request/response models, answer parsing
+│   │   └── demo.py             # --demo: fake LLM, embeddings, GitHub
 │   ├── mcp_server/
 │   │   ├── server.py           # MCPServer + tool registration (stdio)
 │   │   ├── schemas.py          # tool input types and output models
@@ -574,6 +612,9 @@ ai-developer-assistant/
 │       ├── github_write_client.py  # create_issue only: one POST shape, never retried
 │       ├── github_models.py    # normalized repository/issue/PR models
 │       └── github_errors.py
+├── frontend/                   # React + TypeScript + Vite + Tailwind web UI
+│   ├── src/                    # components, lib (API/SSE client), tokens in index.css
+│   └── e2e/                    # Playwright e2e + screenshots (demo mode)
 ├── scripts/
 │   └── mcp_smoke_test.py       # stdio client: list tools, ping, search
 ├── examples/
@@ -595,8 +636,9 @@ ai-developer-assistant/
 │   ├── github.md               # GitHub token, allowlist, rate limits, tools
 │   ├── orchestration.md        # tool loop, limits, untrusted content, trace, memory
 │   ├── approval.md             # issue creation threat model and approval flow
-│   ├── pending_live_checks.md  # live checks to repeat (LLM, GitHub writes)
-│   └── pending_live_checks.md   # checks to run once an LLM key is set
+│   ├── web.md                  # web app: API, SSE events, local security, frontend
+│   ├── images/                 # web app screenshots
+│   └── pending_live_checks.md  # live checks to repeat (LLM, GitHub writes)
 ├── .env.example
 ├── pyproject.toml
 └── uv.lock

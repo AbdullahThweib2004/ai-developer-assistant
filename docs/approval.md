@@ -100,14 +100,19 @@ input cancels. If similar issues exist, you must also type `create anyway`. Ther
 no `--yes` or auto-approve option. If the model prepared no draft, the CLI asks
 whether to build one from the answer.
 
-### Streamlit UI
+### Web app
 
-After an investigation:
-1. Click **Prepare GitHub issue**. This opens an editable form, a rendered preview,
-   the destination repo, notes and errors, and any similar open issues.
-2. Saving edits re-validates the draft and voids any earlier approval.
-3. **Approve and create** stays disabled while the draft has errors, the typed repo
-   name doesn't match, or similar issues haven't been acknowledged.
+After an investigation (see [web.md](web.md) for the API):
+1. Click **Prepare GitHub issue**. This opens a drawer with the destination repo at the
+   top, an editable title, body (with live preview) and labels, notes and errors, and
+   any similar open issues.
+2. Edits are saved to the server, which re-validates the draft, computes a new hash and
+   voids any earlier approval. Any edit also clears the typed confirmation.
+3. **Approve and create** stays disabled while the draft has errors or unsaved edits,
+   the typed repo name doesn't match exactly, or similar issues haven't been
+   acknowledged. The server checks all of this again: the approve request carries the
+   draft hash the user reviewed and the typed repo name, and goes through the same
+   `IssueApprovalService.approve` + `submit` as the CLI.
 
 After the single attempt, the button is gone. The UI shows the issue number and link
 only on a confirmed 201; otherwise it shows the error or the unknown outcome and any
