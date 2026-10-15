@@ -193,7 +193,7 @@ class ChromaVectorStore:
         distances = (raw["distances"] or [[]])[0]
         return [
             QueryResult(chunk_id=i, content=d or "", metadata=dict(m or {}), distance=float(dist))
-            for i, d, m, dist in zip(ids, documents, metadatas, distances)
+            for i, d, m, dist in zip(ids, documents, metadatas, distances, strict=False)
         ]
 
     def count(self) -> int:

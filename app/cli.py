@@ -22,11 +22,12 @@ from pathlib import Path
 from app.actions.approval import ApprovalError, IssueApprovalService, SubmissionResult
 from app.actions.issue_draft import IssueDraft, manual_draft
 from app.config import Settings, get_settings
+from app.ingestion.models import Chunk
+from app.ingestion.pipeline import PipelineResult, run_pipeline
 from app.integrations.github_client import GitHubClient, resolve_repo
 from app.integrations.github_errors import GitHubError
 from app.integrations.github_models import RateLimitStatus
-from app.ingestion.models import Chunk
-from app.ingestion.pipeline import PipelineResult, run_pipeline
+from app.integrations.github_write_client import write_allowed_repos
 from app.llm.base import LLMError
 from app.orchestration.assistant import (
     InvestigationResult,
@@ -37,7 +38,6 @@ from app.orchestration.assistant import (
     draft_from_answer,
     unwrap_untrusted,
 )
-from app.integrations.github_write_client import write_allowed_repos
 from app.orchestration.tool_backends import InProcessBackend, MCPClientBackend, ToolBackend
 from app.rag.answer_generator import Answer, AnswerGenerator
 from app.retrieval.indexer import IndexReport, build_index, index_stats
@@ -112,7 +112,8 @@ def format_answer(answer: Answer, show_sources: bool = False) -> str:
         lines.append(format_results(answer.all_retrieved_sources))
     lines.append("")
     tokens = f"{answer.input_tokens} in / {answer.output_tokens} out" if answer.model else "no LLM call"
-    lines.append(f"Model: {answer.model or '-'} ({answer.provider or '-'}) | tokens: {tokens} | prompt: {answer.prompt_version}")
+    lines.append(f"Model: {answer.model or '-'} ({answer.provider or '-'}) | tokens: {tokens} "
+                 f"| prompt: {answer.prompt_version}")
     lat = answer.latency
     lines.append(f"Latency: retrieval {lat.retrieval_ms:.0f} ms, LLM {lat.llm_ms:.0f} ms, total {lat.total_ms:.0f} ms")
     return "\n".join(lines)
@@ -168,7 +169,8 @@ def format_rate_limit(rate: RateLimitStatus | None, authenticated: bool) -> str:
     if rate is None or rate.remaining is None:
         return f"GitHub rate limit: unknown ({auth})"
     reset = rate.reset_at.strftime("%H:%M:%S UTC") if rate.reset_at else "?"
-    return f"GitHub rate limit ({rate.resource or 'core'}): {rate.remaining}/{rate.limit} remaining, resets {reset} ({auth})"
+    return (f"GitHub rate limit ({rate.resource or 'core'}): {rate.remaining}/{rate.limit} remaining, "
+            f"resets {reset} ({auth})")
 
 
 def _date(value: object) -> str:
@@ -274,7 +276,8 @@ def format_investigation(result: InvestigationResult, show_trace: bool = False) 
     lines.append(f"LLM: {result.llm_calls} calls, {result.input_tokens} in / {result.output_tokens} out tokens"
                  f" | {result.model} ({result.provider}) | prompt {result.prompt_version}")
     lat = result.latency
-    lines.append(f"Latency: total {lat.total_ms / 1000:.1f}s (LLM {lat.llm_ms / 1000:.1f}s, tools {lat.tools_ms / 1000:.1f}s)")
+    lines.append(f"Latency: total {lat.total_ms / 1000:.1f}s "
+                 f"(LLM {lat.llm_ms / 1000:.1f}s, tools {lat.tools_ms / 1000:.1f}s)")
     if show_trace:
         lines.append("")
         lines.append("Trace:")
@@ -309,7 +312,8 @@ def format_draft(draft: IssueDraft) -> str:
 def format_submission(result: SubmissionResult) -> str:
     if result.status == "created":
         return f"Created issue #{result.number}: {result.html_url}"
-    lines = [f"Issue NOT confirmed as created (status: {result.status}, {result.error_category or '-'}): {result.message}"]
+    lines = [f"Issue NOT confirmed as created (status: {result.status}, {result.error_category or '-'}): "
+             f"{result.message}"]
     for match in result.possible_matches:
         lines.append(f"  possible match: #{match.number} {match.title} {match.html_url}")
     return "\n".join(lines)

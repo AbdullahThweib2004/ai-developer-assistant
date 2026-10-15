@@ -15,7 +15,7 @@ from tests.helpers import make_settings
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))  # vectors are normalized
+    return sum(x * y for x, y in zip(a, b, strict=False))  # vectors are normalized
 
 
 def test_fake_provider_is_deterministic_and_normalized() -> None:

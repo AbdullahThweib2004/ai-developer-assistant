@@ -74,7 +74,8 @@ def _issue(number: int, title: str, state: str, labels: list[str], body: str, co
     kind = "pull" if is_pr else "issues"
     item = {"number": number, "title": title, "state": state, "labels": [{"name": n} for n in labels],
             "user": {"login": "fastapi-user"}, "comments": comments, "created_at": created, "updated_at": updated,
-            "closed_at": updated if state == "closed" else None, "state_reason": "completed" if state == "closed" else None,
+            "closed_at": updated if state == "closed" else None,
+            "state_reason": "completed" if state == "closed" else None,
             "html_url": f"https://github.com/{DEMO_REPO}/{kind}/{number}",
             "repository_url": f"https://api.github.com/repos/{DEMO_REPO}", "body": body}
     if is_pr:
@@ -257,9 +258,11 @@ class DemoLLM:
                 "## From the project",
                 f"- `parse_authorization_header` rejects any scheme that isn't exactly `\"bearer\"`, so the standard "
                 f"`Authorization: Bearer <token>` header raises *Invalid authentication scheme* {cite('app/auth.py')}.",
-                f"- `load_settings` reads `JWT_SECRET` and silently falls back to `\"dev-secret\"` {cite('app/config.py')}, "
+                f"- `load_settings` reads `JWT_SECRET` and silently falls back to `\"dev-secret\"` "
+                f"{cite('app/config.py')}, "
                 f"while the setup docs ask for `JWT_SECRET_KEY` {env}.",
-                f"- `get_current_user` turns every `AuthError` into `401` with `WWW-Authenticate: Bearer` {cite('app/auth.py')}.",
+                f"- `get_current_user` turns every `AuthError` into `401` with `WWW-Authenticate: Bearer` "
+                f"{cite('app/auth.py')}.",
             ]
             if issues:
                 parts += ["", "## From GitHub"]
@@ -291,7 +294,8 @@ class DemoLLM:
             return ("## Summary\nThe tools returned nothing relevant, so this can't be answered from the project.\n\n"
                     "## Open questions\n- Try indexing the project or rephrasing with names from the code.")
         lines = ["## Summary", "Here is what the most relevant sources show.", "", "## From the project"]
-        lines += [f"- `{path}` is the most relevant match [{cid}]." for path, cid in ranked] or ["- No project matches."]
+        lines += ([f"- `{path}` is the most relevant match [{cid}]." for path, cid in ranked]
+                  or ["- No project matches."])
         if issues:
             lines += ["", "## From GitHub"] + [f"- [{cid}] #{n}: {t} (a lead, not proof)." for cid, n, t in issues[:3]]
         lines += ["", "## Open questions", "- This is a scripted demo answer."]

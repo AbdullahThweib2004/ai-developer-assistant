@@ -22,7 +22,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -98,7 +98,7 @@ def evaluate(project: Path, questions: list[dict[str, Any]], skip_index: bool) -
         averages[check] = round(mean(values), 3) if values else 0.0
     averages["questions_passed"] = round(mean(r["passed"] for r in rows), 3)
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "project_name": project.resolve().name,
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
@@ -170,7 +170,7 @@ def main() -> None:
 
     out_dir = EVAL_DIR / "results"
     out_dir.mkdir(exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     json_file = out_dir / f"answers_{stamp}.json"
     review_file = out_dir / f"answers_{stamp}_review.md"
     json_file.write_text(json.dumps(results, indent=2), encoding="utf-8")

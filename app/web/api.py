@@ -11,19 +11,18 @@ name; approvals stay single-use, expiring and hash-bound; one attempt per draft.
 """
 
 import asyncio
-from collections import Counter
+import json
 import logging
 import platform
 import queue
 import secrets
 import threading
 import time
+from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
-
-import json
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -221,7 +220,8 @@ def build_router(sessions: SessionManager) -> APIRouter:
                 "default_repo": settings.github_default_repo, "read_repos": read_repos,
                 "authenticated_reads": settings.github_token is not None,
                 "write_enabled": write_configured(settings),
-                "write_repos": [r.full_name for r in write_allowed_repos(settings)] if write_configured(settings) else [],
+                "write_repos": ([r.full_name for r in write_allowed_repos(settings)]
+                                if write_configured(settings) else []),
             },
             "limits": {"max_tool_calls": settings.orch_max_tool_calls, "max_iterations": settings.orch_max_iterations,
                        "max_github_calls": settings.orch_max_github_calls},
@@ -417,7 +417,8 @@ def build_router(sessions: SessionManager) -> APIRouter:
     @router.get("/drafts/{draft_id}")
     def read_draft(draft_id: str) -> dict[str, Any]:
         session, draft = find_draft(draft_id)
-        return schemas.draft_out(draft, draft_id in session.approvals.attempted, session.approvals.results.get(draft_id))
+        return schemas.draft_out(draft, draft_id in session.approvals.attempted,
+                                 session.approvals.results.get(draft_id))
 
     @router.get("/drafts/{draft_id}/similar")
     def similar(draft_id: str) -> dict[str, Any]:

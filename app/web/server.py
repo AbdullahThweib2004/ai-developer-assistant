@@ -112,7 +112,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="Allow binding to a non-loopback address (exposes the app on your network)")
     parser.add_argument("--demo", action="store_true", help="Fake LLM, embeddings and GitHub (no network, no cost)")
     parser.add_argument("--dev", action="store_true",
-                        help=f"Allow the Vite dev server ({DEV_ORIGIN}) and write its token to frontend/.env.development.local")
+                        help=f"Allow the Vite dev server ({DEV_ORIGIN}) and write its token "
+                             "to frontend/.env.development.local")
     return parser.parse_args(argv)
 
 

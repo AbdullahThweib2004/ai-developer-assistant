@@ -36,7 +36,7 @@ from app.orchestration.prompts import (
     build_system_prompt,
     build_user_message,
 )
-from app.orchestration.tool_backends import ToolBackend, ToolDefinition, ToolResult
+from app.orchestration.tool_backends import ToolBackend, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +279,8 @@ class Investigator:
         candidate = session.repo or self.settings.github_default_repo
         if not candidate:
             if session.mode == "github":
-                raise OrchestrationConfigError("GitHub mode needs a repository: pass --repo or set GITHUB_DEFAULT_REPO.")
+                raise OrchestrationConfigError(
+                    "GitHub mode needs a repository: pass --repo or set GITHUB_DEFAULT_REPO.")
             return None
         try:
             return resolve_repo(self.settings, candidate).full_name  # validates format + allowlist
@@ -647,7 +648,9 @@ def _answer_section(text: str, heading: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def draft_from_answer(settings: Settings, result: InvestigationResult, issue_repo: str, project_root: Path) -> IssueDraft:
+def draft_from_answer(
+    settings: Settings, result: InvestigationResult, issue_repo: str, project_root: Path
+) -> IssueDraft:
     """A draft built by the app (not the model) from an answer and its cited sources.
 
     Used when the user asks for a draft after an investigation that didn't prepare one.

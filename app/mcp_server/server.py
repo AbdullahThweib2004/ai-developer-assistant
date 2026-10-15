@@ -10,7 +10,6 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated, Literal
 
 import httpx
-
 from mcp.server import MCPServer
 from mcp.server.elicitation import ElicitationResult
 from mcp.server.mcpserver import Elicit, Resolve
@@ -18,7 +17,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
+from app.actions.audit import AuditLog
+from app.actions.issue_draft import BODY_MAX, TITLE_MAX, manual_draft
 from app.config import Settings, get_settings
+from app.integrations.github_models import Issue, IssueSearchResult, PullRequest, PullRequestList, Repository
+from app.integrations.github_write_client import CreateIssueResult, GitHubWriteClient, write_configured
 from app.mcp_server.errors import tool_errors
 from app.mcp_server.schemas import (
     FileReadResult,
@@ -32,10 +35,6 @@ from app.mcp_server.schemas import (
     RelativeFilePath,
     SearchResult,
 )
-from app.actions.audit import AuditLog
-from app.actions.issue_draft import BODY_MAX, TITLE_MAX, manual_draft
-from app.integrations.github_models import Issue, IssueSearchResult, PullRequest, PullRequestList, Repository
-from app.integrations.github_write_client import CreateIssueResult, GitHubWriteClient, write_configured
 from app.mcp_server.security import GITHUB_UNTRUSTED_NOTE, UNTRUSTED_NOTE, ServerConfigError
 from app.mcp_server.tools.github_tools import GitHubTools
 from app.mcp_server.tools.project_tools import ProjectTools
@@ -302,7 +301,8 @@ def _register_write_tool(
         if confirmation.action != "accept" or confirmation.data.confirm_repo.strip() != draft.repo:
             reason = confirmation.action if confirmation.action != "accept" else "confirmation_mismatch"
             audit.record("cancelled", draft.repo, draft.draft_hash, len(draft.title), "mcp", error_category=reason)
-            raise ToolError("Not created: the user declined, cancelled, or the confirmation didn't match the repository.")
+            raise ToolError("Not created: the user declined, cancelled, "
+                            "or the confirmation didn't match the repository.")
         audit.record("approved", draft.repo, draft.draft_hash, len(draft.title), "mcp")
         client = GitHubWriteClient(settings, transport=write_transport,
                                    read_client_factory=lambda: GitHubClient(settings, transport=read_transport))

@@ -1,7 +1,7 @@
 """Tests for the Chroma wrapper."""
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -68,7 +68,7 @@ def test_same_folder_name_in_different_places_gets_different_collections(tmp_pat
 
 
 def test_to_chroma_metadata_flattens_unsupported_values() -> None:
-    when = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    when = datetime(2026, 1, 2, tzinfo=UTC)
     flat = to_chroma_metadata(
         {"s": "x", "i": 1, "f": 1.5, "b": True, "none": None, "when": when,
          "pages": [1, 2], "empty": [], "nested": {"a": 1}}

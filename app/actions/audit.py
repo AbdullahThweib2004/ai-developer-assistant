@@ -5,7 +5,6 @@ issue number/URL when created, and an error category. Never the body, the title
 text or any token.
 """
 
-import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path

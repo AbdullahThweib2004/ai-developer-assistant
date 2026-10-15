@@ -83,7 +83,7 @@ def test_pdf_pages_are_extracted(project: Path) -> None:
     assert doc.metadata["page_count"] == 2
     pages = doc.metadata["pages"]
     assert [p["page"] for p in pages] == [1, 2]
-    for page, expected in zip(pages, ["First page text", "Second page text"]):
+    for page, expected in zip(pages, ["First page text", "Second page text"], strict=False):
         assert expected in doc.content[page["start_char"]:page["end_char"]]
 
 

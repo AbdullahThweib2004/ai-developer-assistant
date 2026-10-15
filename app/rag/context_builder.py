@@ -98,7 +98,8 @@ def build_context(chunks: list[RetrievedChunk], max_chars: int) -> BuiltContext:
 
 def format_source(ref: SourceRef) -> str:
     """``<source id=... file=... chars=...>`` wrapper with escaped content."""
-    attrs = f'id="{ref.source_id}" file="{html.escape(ref.file_path, quote=True)}" chars="{ref.start_char}-{ref.end_char}"'
+    attrs = (f'id="{ref.source_id}" file="{html.escape(ref.file_path, quote=True)}" '
+             f'chars="{ref.start_char}-{ref.end_char}"')
     if ref.pages:
         attrs += f' pages="{ref.pages}"'
     return f"<source {attrs}>\n{escape_source_text(ref.content)}\n</source>"

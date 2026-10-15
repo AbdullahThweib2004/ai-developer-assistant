@@ -1,6 +1,5 @@
 """Tests for indexing and retrieval on the sample project (fake embeddings, no network)."""
 
-from pathlib import Path
 
 import pytest
 

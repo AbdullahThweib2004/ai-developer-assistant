@@ -9,14 +9,31 @@ import httpx
 import pytest
 
 from app.actions.approval import ApprovalError, IssueApprovalService
-from app.actions.audit import AuditLog
-from app.actions.issue_draft import BODY_MAX, IssueDraft, build_draft, manual_draft, render_body, sanitize_text, scan_secrets
+from app.actions.issue_draft import (
+    BODY_MAX,
+    IssueDraft,
+    build_draft,
+    manual_draft,
+    render_body,
+    sanitize_text,
+    scan_secrets,
+)
 from app.cli import approval_prompt
 from app.config import Settings
 from app.integrations.github_client import GitHubClient, RepoRef
 from app.integrations.github_errors import GitHubNotConfiguredError, RepoNotAllowedError
 from app.integrations.github_write_client import GitHubWriteClient, resolve_write_repo, write_configured
-from tests.helpers import GH_PAT, GHP, READ_TOKEN, SANDBOX, SK_OR, WRITE_TOKEN, GitHubMock, issues_endpoint, write_settings
+from tests.helpers import (
+    GH_PAT,
+    GHP,
+    READ_TOKEN,
+    SANDBOX,
+    SK_OR,
+    WRITE_TOKEN,
+    GitHubMock,
+    issues_endpoint,
+    write_settings,
+)
 
 ISSUES = f"/repos/{SANDBOX}/issues"
 

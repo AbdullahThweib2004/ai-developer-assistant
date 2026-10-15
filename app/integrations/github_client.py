@@ -206,7 +206,7 @@ def parse_closing_references(body: str, repo: RepoRef) -> list[IssueReference]:
 def _comment_gap(comments: list[Comment], total: int) -> tuple[int, int]:
     """(number of omitted comments, position after which they were omitted)."""
     omitted = max(total - len(comments), 0)
-    for before, after in zip(comments, comments[1:]):
+    for before, after in zip(comments, comments[1:], strict=False):
         if after.position - before.position > 1:
             return omitted, before.position
     return omitted, comments[-1].position if comments else 0
@@ -548,7 +548,8 @@ class GitHubClient:
         if status == 403:
             raise ForbiddenError("GitHub refused access (403). The token may lack read permission for this repository.")
         if status in (404, 410):
-            raise NotFoundError("Not found on GitHub (404). It doesn't exist, or it's private and the token can't see it.")
+            raise NotFoundError("Not found on GitHub (404). It doesn't exist, "
+                                "or it's private and the token can't see it.")
         if status == 422:
             raise ValidationError(f"GitHub rejected the request (422): {message}")
         if status >= 500:

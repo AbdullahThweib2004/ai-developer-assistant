@@ -27,7 +27,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.config import Settings
-from app.integrations.github_client import API_VERSION, ACCEPT, GitHubClient, RepoRef, _user_agent
+from app.integrations.github_client import ACCEPT, API_VERSION, GitHubClient, RepoRef, _user_agent
 from app.integrations.github_errors import GitHubError, GitHubNotConfiguredError, RepoNotAllowedError
 
 logger = logging.getLogger(__name__)

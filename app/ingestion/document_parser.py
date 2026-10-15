@@ -8,7 +8,7 @@ evaluated or imported. A file that cannot be parsed raises :class:`ParseError`;
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +55,7 @@ def parse_document(path: Path, root: Path, project_name: str) -> Document:
         project_name=project_name,
         title=title or path.name,
         content=content,
-        modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+        modified_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
         size_bytes=stat.st_size,
         metadata=metadata,
     )

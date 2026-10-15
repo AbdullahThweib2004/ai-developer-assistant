@@ -38,7 +38,9 @@ class GitHubTools:
             result.description = _wrap(result.description, f"{ref.full_name} description")
         return result
 
-    def search_issues(self, repo: str | None, query: str, state: State, kind: Kind, limit: int | None) -> IssueSearchResult:
+    def search_issues(
+        self, repo: str | None, query: str, state: State, kind: Kind, limit: int | None
+    ) -> IssueSearchResult:
         ref = resolve_repo(self.settings, repo)
         result = self.client.search_issues(ref, query, state=state, kind=kind, limit=limit)
         for item in result.items:

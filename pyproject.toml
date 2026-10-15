@@ -35,7 +35,10 @@ ai-dev-assistant = "app.web.server:cli"
 ai-dev-assistant-mcp = "app.mcp_server.server:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.17.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -53,3 +56,14 @@ filterwarnings = [
     # Raised inside chromadb on Python 3.14; not actionable here.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["tests/fixtures", "examples", "frontend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]  # long literal test data

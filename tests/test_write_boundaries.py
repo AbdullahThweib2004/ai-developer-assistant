@@ -1,7 +1,6 @@
 """The LLM can only draft; MCP writes need elicitation; the orchestrator never exposes writes."""
 
 import json
-from pathlib import Path
 
 import pytest
 from mcp import Client, types

@@ -10,9 +10,9 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Callable
-from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings, get_settings
 from app.ingestion.pipeline import run_pipeline

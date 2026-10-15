@@ -1,6 +1,6 @@
 """Tests for the character chunker and the end-to-end pipeline."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pydantic
@@ -20,7 +20,7 @@ def make_doc(content: str, file_path: str = "notes.txt", **metadata: object) -> 
         project_name="proj",
         title=file_path,
         content=content,
-        modified_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        modified_at=datetime(2026, 1, 1, tzinfo=UTC),
         size_bytes=len(content),
         metadata=dict(metadata),
     )
@@ -38,7 +38,7 @@ def test_chunks_respect_size_and_overlap() -> None:
     for chunk in chunks:
         assert len(chunk.content) <= 200
         assert chunk.content == doc.content[chunk.start_char:chunk.end_char]
-    for prev, nxt in zip(chunks, chunks[1:]):
+    for prev, nxt in zip(chunks, chunks[1:], strict=False):
         assert nxt.start_char == prev.end_char - 40
     assert chunks[0].start_char == 0
     assert chunks[-1].end_char == len(doc.content)
@@ -111,7 +111,7 @@ def test_tiny_chunks_with_large_overlap_always_progress(size: int, overlap: int)
     text = "a b\nc d\n\ne f " * 50
     spans = CharacterChunker(chunk_size=size, overlap=overlap).split(text)
     starts = [s for s, _ in spans]
-    assert all(b > a for a, b in zip(starts, starts[1:]))
+    assert all(b > a for a, b in zip(starts, starts[1:], strict=False))
     assert spans[-1][1] == len(text)
     assert len(spans) <= len(text)
 

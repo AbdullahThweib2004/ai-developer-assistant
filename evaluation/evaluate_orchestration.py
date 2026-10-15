@@ -31,7 +31,7 @@ import logging
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -141,7 +141,8 @@ def review_sheet(results: dict[str, Any]) -> str:
     for r in results["per_case"]:
         lines += [f"## {r['id']}: {r['question']}", "",
                   f"*expected tools {r['expected_tools'] or ['none']}, used {r['used_tools'] or ['none']}; "
-                  f"{r['tool_calls']} calls; cited files {r['cited_files'] or '-'}; issues found {r['found_issues'] or '-'}*",
+                  f"{r['tool_calls']} calls; cited files {r['cited_files'] or '-'}; "
+                  f"issues found {r['found_issues'] or '-'}*",
                   "", "> " + r.get("answer_text", f"ERROR: {r.get('error')}").replace("\n", "\n> "), "",
                   "- Correctness (1-5): ", "- Groundedness (1-5): ", "- Tool choice (1-5): ", "- Notes: ", ""]
     return "\n".join(lines)
@@ -199,7 +200,8 @@ def main() -> None:
             mark = "ok " if row["tool_selection_correct"] else "XX "
             evidence = {True: "yes", False: "NO", None: "-"}[row["expected_evidence"]]
             bugs = f" | bugs {row['bugs_found'] or 'none'}" if case.get("expected_bugs") else ""
-            print(f"{case['id']} {mark} expected {row['expected_tools'] or ['none']} used {row['used_tools'] or ['none']}"
+            print(f"{case['id']} {mark} expected {row['expected_tools'] or ['none']} "
+                  f"used {row['used_tools'] or ['none']}"
                   f" | calls {row['tool_calls']} (unneeded {row['unnecessary_calls']}) | evidence {evidence}{bugs}"
                   f" | cites valid {row['citations_valid']} | limits {row['limits'] or '-'}"
                   f" | tokens {row['input_tokens']}/{row['output_tokens']} | {row['latency_ms'] / 1000:.1f}s")
@@ -208,7 +210,7 @@ def main() -> None:
             backend.close()
 
     results = {
-        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "project_name": args.path.resolve().name, "repo": args.repo, "model": llm.model,
         "provider": llm.provider, "prompt_version": ORCH_PROMPT_VERSION,
         "limits": {"max_tool_calls": settings.orch_max_tool_calls, "max_iterations": settings.orch_max_iterations,
@@ -221,7 +223,7 @@ def main() -> None:
 
     out_dir = EVAL_DIR / "results"
     out_dir.mkdir(exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     json_file, md_file = out_dir / f"orchestration_{stamp}.json", out_dir / f"orchestration_{stamp}_review.md"
     json_file.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
     md_file.write_text(review_sheet(results), encoding="utf-8")

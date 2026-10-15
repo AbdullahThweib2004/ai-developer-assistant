@@ -1,6 +1,5 @@
 """Tests for the answer generator (fake LLM + fake embeddings + temp Chroma, no network)."""
 
-from pathlib import Path
 
 import pytest
 
