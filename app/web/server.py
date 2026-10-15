@@ -22,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
 from app.web.api import build_router, http_error
+from app.web.conversations import ConversationStore
 from app.web.explore import build_explore_router
 from app.web.security import LocalSecurity
 from app.web.sessions import Runtime, SessionManager, real_runtime
@@ -37,11 +38,13 @@ DEV_ORIGIN = "http://localhost:5173"
 
 def create_app(runtime: Runtime, security: LocalSecurity, frontend_dist: Path = FRONTEND_DIST) -> FastAPI:
     sessions = SessionManager(runtime)
+    store = ConversationStore(runtime.settings.data_dir)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         yield
         sessions.close_all()  # stop per-session MCP server processes
+        store.close()
 
     app = FastAPI(title="AI Developer Assistant", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.sessions = sessions
@@ -80,7 +83,8 @@ def create_app(runtime: Runtime, security: LocalSecurity, frontend_dist: Path = 
         return JSONResponse({"detail": {"category": "internal", "message": "Something went wrong.",
                                         "hint": "Check the server log."}}, status_code=500)
 
-    app.include_router(build_router(sessions))
+    app.state.conversations = store
+    app.include_router(build_router(sessions, store))
     app.include_router(build_explore_router(sessions, http_error))
 
     index_file = frontend_dist / "index.html"

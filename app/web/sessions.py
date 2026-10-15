@@ -90,7 +90,25 @@ class SessionManager:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
         self._sessions: dict[str, WebSession] = {}
+        self._by_conversation: dict[tuple[str, str], str] = {}  # (conversation id, mode) -> session id
         self._guard = threading.Lock()
+
+    def for_conversation(self, conversation: dict, mode: Mode, memory: list[tuple[str, str]]) -> WebSession:
+        """The live session of a stored conversation, created on first use with its project, repo
+        and mode fixed, and its memory rebuilt from the stored turns (context, not evidence)."""
+        key = (conversation["id"], mode)
+        existing = self._sessions.get(self._by_conversation.get(key, ""))
+        if existing is not None:
+            return existing
+        session = self.create(Path(conversation["project"]), conversation["repo"] if mode != "project" else None, mode)
+        session.investigator.history.extend(memory)
+        with self._guard:
+            self._by_conversation[key] = session.id
+        return session
+
+    def drop_conversation(self, conversation_id: str) -> None:
+        for key in [k for k in self._by_conversation if k[0] == conversation_id]:
+            self.delete(self._by_conversation.pop(key))
 
     def create(self, project: Path, repo: str | None, mode: Mode) -> WebSession:
         llm = self.runtime.llm

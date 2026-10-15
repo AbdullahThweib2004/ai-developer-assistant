@@ -59,6 +59,7 @@ def demo_settings(repo_root: Path, workdir: Path) -> Settings:
         github_write_enabled=True,
         github_write_allowed_repos=DEMO_WRITE_REPO,
         audit_log_path=workdir / "audit" / "github_writes.jsonl",
+        data_dir=workdir / "data",
     )
 
 

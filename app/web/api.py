@@ -48,12 +48,18 @@ from app.llm.base import (
     LLMToolsUnsupportedError,
 )
 from app.mcp_server.security import SecurityError, ServerConfigError
-from app.orchestration.assistant import InvestigationCancelled, OrchestrationConfigError, draft_from_answer
+from app.orchestration.assistant import (
+    MEMORY_ANSWER_CHARS,
+    InvestigationCancelled,
+    OrchestrationConfigError,
+    draft_from_answer,
+)
 from app.rag.answer_generator import AnswerGenerator
 from app.retrieval.indexer import build_index, index_stats
 from app.retrieval.retriever import InvalidQueryError
 from app.retrieval.vector_store import EmbeddingModelMismatchError, ProjectNotIndexedError, VectorStoreError
 from app.web import schemas
+from app.web.conversations import ConversationStore
 from app.web.explore import display_path
 from app.web.security import validate_project
 from app.web.sessions import SessionManager
@@ -185,7 +191,7 @@ def stream(request: Request, work: Callable[[Callable[[str, Any], None], threadi
 # ---- routes ------------------------------------------------------------------------------------
 
 
-def build_router(sessions: SessionManager) -> APIRouter:
+def build_router(sessions: SessionManager, store: ConversationStore) -> APIRouter:
     runtime = sessions.runtime
     settings: Settings = runtime.settings
     router = APIRouter(prefix="/api")
@@ -294,38 +300,126 @@ def build_router(sessions: SessionManager) -> APIRouter:
         data["content"], start = schemas.trim_partial_line(data.get("content"), start, end, partial)
         return {**data, "start_line": start, "end_line": end}
 
-    @router.post("/ask")
-    def ask(body: schemas.AskRequest, request: Request) -> StreamingResponse:
-        project = project_for(body.path)
+    # ---- conversations (each belongs to exactly one project) -------------------------------
 
-        def work(emit: Callable[[str, Any], None], cancel: threading.Event) -> None:
-            emit("status", {"stage": "retrieving"})
-            generator = AnswerGenerator(settings_for(project), llm=runtime.llm, embedding_provider=runtime.embeddings)
-            answer = generator.answer(body.question, project, top_k=body.top_k, file_types=body.file_types)
-            emit("status", {"stage": "done"})
-            emit("answer", {
-                "answer_markdown": answer.answer_text, **schemas.parse_answer(answer.answer_text),
-                "insufficient_evidence": answer.insufficient_evidence, "invalid_citations": answer.invalid_citations,
-                "sources": [quick_source(s, project) for s in answer.context_sources],
-                "cited": [s.source_id for s in answer.cited_sources], "suggestions": answer.suggestions,
-                "model": answer.model, "input_tokens": answer.input_tokens, "output_tokens": answer.output_tokens,
-                "latency": answer.latency.model_dump(), "prompt_version": answer.prompt_version,
-            })
+    def conversation_for(conversation_id: str, project: Path) -> dict[str, Any]:
+        """The stored conversation, refused unless it belongs to the request's project."""
+        conversation = store.get(conversation_id)
+        if conversation is None:
+            raise HTTPException(404, detail={"category": "not_found", "message": "Conversation not found.",
+                                             "hint": "Start a new chat."})
+        if Path(conversation["project"]) != project:
+            raise HTTPException(409, detail={"category": "conversation_mismatch",
+                                             "message": "This conversation belongs to another project.",
+                                             "hint": "Open the conversation's own project, or start a new chat."})
+        return conversation
 
-        return stream(request, work)
+    def record(kind: str, body: Any, mode: str, repo: str | None, started: float, **fields: Any) -> dict[str, Any]:
+        return {"id": fields.pop("id", None) or secrets.token_urlsafe(8), "kind": kind, "question": body.question,
+                "mode": mode, "repo": repo, "started_at": started * 1000, "finished_at": time.time() * 1000, **fields}
 
-    # ---- sessions --------------------------------------------------------------------------
+    def persist_outcome(conversation_id: str, kind: str, body: Any, mode: str, repo: str | None, started: float,
+                        exc: BaseException) -> None:
+        if isinstance(exc, InvestigationCancelled):
+            store.append(conversation_id, record(kind, body, mode, repo, started, status="cancelled"))
+        else:
+            store.append(conversation_id, record(kind, body, mode, repo, started, status="error",
+                                                 error=to_api_error(exc).payload()["error"]))  # type: ignore[arg-type]
 
-    @router.post("/sessions")
-    def create_session(body: schemas.SessionCreate) -> dict[str, Any]:
+    @router.get("/conversations")
+    def list_conversations(path: str) -> dict[str, Any]:
+        project = project_for(path)
+        return {"project": str(project), "conversations": store.list(project), "save_history": store.save_history}
+
+    @router.post("/conversations")
+    def create_conversation(body: schemas.ConversationCreate) -> dict[str, Any]:
         project = project_for(body.path)
         try:
             if body.repo:
                 resolve_repo(settings, body.repo)  # validated against the read allowlist
-            session = sessions.create(project, body.repo, body.mode)
         except Exception as exc:  # noqa: BLE001
             raise http_error(exc) from None
-        return session_out(session)
+        return store.create(project, body.repo, body.mode)
+
+    @router.get("/conversations/{conversation_id}")
+    def read_conversation(conversation_id: str) -> dict[str, Any]:
+        conversation = store.get(conversation_id, with_messages=True)
+        if conversation is None:
+            raise HTTPException(404, detail={"category": "not_found", "message": "Conversation not found.",
+                                             "hint": "Start a new chat."})
+        return conversation
+
+    @router.patch("/conversations/{conversation_id}")
+    def update_conversation(conversation_id: str, body: schemas.ConversationUpdate) -> dict[str, Any]:
+        read_conversation(conversation_id)
+        if body.mode is not None:
+            store.update_mode(conversation_id, body.mode)
+        if body.title is not None:
+            store.rename(conversation_id, body.title)
+        return store.get(conversation_id)  # type: ignore[return-value]
+
+    @router.delete("/conversations/{conversation_id}")
+    def delete_conversation(conversation_id: str) -> dict[str, Any]:
+        read_conversation(conversation_id)
+        sessions.drop_conversation(conversation_id)
+        store.delete(conversation_id)
+        return {"deleted": True}
+
+    @router.delete("/conversations")
+    def clear_project_conversations(path: str) -> dict[str, Any]:
+        project = project_for(path)
+        for conversation in store.list(project):
+            sessions.drop_conversation(conversation["id"])
+        return {"deleted": store.clear(project)}
+
+    @router.delete("/history")
+    def clear_history() -> dict[str, Any]:
+        for project in {Path(c["project"]) for c in store.all_conversations()}:
+            for conversation in store.list(project):
+                sessions.drop_conversation(conversation["id"])
+        return {"deleted": store.clear()}
+
+    @router.get("/history/settings")
+    def history_settings() -> dict[str, Any]:
+        return {"save_history": store.save_history, "path": "DATA_DIR/conversations.db"}
+
+    @router.put("/history/settings")
+    def update_history_settings(body: schemas.HistorySettings) -> dict[str, Any]:
+        store.set_save_history(body.save_history)
+        return history_settings()
+
+    @router.post("/ask")
+    def ask(body: schemas.AskRequest, request: Request) -> StreamingResponse:
+        project = project_for(body.path)
+        conversation = conversation_for(body.conversation_id, project)
+
+        def work(emit: Callable[[str, Any], None], cancel: threading.Event) -> None:
+            started = time.time()
+            try:
+                emit("status", {"stage": "retrieving"})
+                generator = AnswerGenerator(settings_for(project), llm=runtime.llm,
+                                            embedding_provider=runtime.embeddings)
+                answer = generator.answer(body.question, project, top_k=body.top_k, file_types=body.file_types)
+                payload = {
+                    "answer_markdown": answer.answer_text, **schemas.parse_answer(answer.answer_text),
+                    "insufficient_evidence": answer.insufficient_evidence,
+                    "invalid_citations": answer.invalid_citations,
+                    "sources": [quick_source(s, project) for s in answer.context_sources],
+                    "cited": [s.source_id for s in answer.cited_sources], "suggestions": answer.suggestions,
+                    "model": answer.model, "input_tokens": answer.input_tokens, "output_tokens": answer.output_tokens,
+                    "latency": answer.latency.model_dump(), "prompt_version": answer.prompt_version,
+                }
+                store.append(conversation["id"], record("quick", body, "project", None, started, status="done",
+                                                        answer=payload))
+            except BaseException as exc:
+                persist_outcome(conversation["id"], "quick", body, "project", None, started, exc)
+                raise
+            emit("status", {"stage": "done"})
+            emit("answer", payload)
+
+        return stream(request, work)
+
+    # ---- sessions (one per conversation and mode; created by /investigate) ---------------------
 
     def session_out(session: Any) -> dict[str, Any]:
         return {"id": session.id, "path": str(session.project), "name": session.project.name, "repo": session.repo,
@@ -337,29 +431,32 @@ def build_router(sessions: SessionManager) -> APIRouter:
         session = sessions.get(session_id)
         if session is None:
             raise HTTPException(404, detail={"category": "not_found", "message": "Session not found.",
-                                             "hint": "Start a new conversation."})
+                                             "hint": "Ask again in this conversation to start a new session."})
         return session
 
     @router.get("/sessions/{session_id}")
     def read_session(session_id: str) -> dict[str, Any]:
         return session_out(get_session(session_id))
 
-    @router.delete("/sessions/{session_id}")
-    def delete_session(session_id: str) -> dict[str, Any]:
-        get_session(session_id)
-        sessions.delete(session_id)
-        return {"deleted": True}
-
     @router.post("/investigate")
     def investigate(body: schemas.InvestigateRequest, request: Request) -> StreamingResponse:
-        session = get_session(body.session_id)
+        project = project_for(body.path)
+        conversation = conversation_for(body.conversation_id, project)
+        mode = body.mode or conversation["mode"]
+        try:
+            memory = store.memory(conversation["id"], settings.orch_memory_turns, MEMORY_ANSWER_CHARS)
+            session = sessions.for_conversation(conversation, mode, memory)
+        except Exception as exc:  # noqa: BLE001
+            raise http_error(exc) from None
         if not session.lock.acquire(blocking=False):
             raise HTTPException(409, detail={"category": "busy", "message": "An investigation is already running.",
                                              "hint": "Wait for it to finish or press Stop."})
 
         def work(emit: Callable[[str, Any], None], cancel: threading.Event) -> None:
+            started = time.time()
             try:
-                emit("started", {"question": body.question, "mode": session.mode, "repo": session.repo})
+                emit("started", {"question": body.question, "mode": session.mode, "repo": session.repo,
+                                 "conversation_id": conversation["id"], "session_id": session.id})
 
                 def on_event(event: dict[str, Any]) -> None:
                     emit(event.pop("type"), event)
@@ -367,10 +464,17 @@ def build_router(sessions: SessionManager) -> APIRouter:
                 result = session.investigator.ask(body.question, on_event=on_event)
                 turn_id = secrets.token_urlsafe(8)
                 session.turns[turn_id] = result
-                emit("answer", schemas.investigation_out(result, turn_id, session.project, settings))
-                emit("done", {"turn_id": turn_id})
+                payload = schemas.investigation_out(result, turn_id, session.project, settings)
+                store.append(conversation["id"], record("investigate", body, session.mode, session.repo, started,
+                                                        id=turn_id, status="done", answer=payload,
+                                                        session_id=session.id))
+            except BaseException as exc:
+                persist_outcome(conversation["id"], "investigate", body, session.mode, session.repo, started, exc)
+                raise
             finally:
                 session.lock.release()
+            emit("answer", {**payload, "session_id": session.id})
+            emit("done", {"turn_id": turn_id})
 
         return stream(request, work)
 

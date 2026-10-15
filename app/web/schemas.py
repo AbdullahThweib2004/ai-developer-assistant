@@ -22,21 +22,33 @@ class IndexRequest(BaseModel):
 
 
 class AskRequest(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=64)
     path: str = Field(min_length=1, max_length=4096)
     question: str = Field(min_length=1, max_length=4000)
     top_k: int | None = Field(default=None, ge=1, le=20)
     file_types: list[str] | None = None
 
 
-class SessionCreate(BaseModel):
+class ConversationCreate(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     repo: str | None = Field(default=None, max_length=140)
     mode: Mode = "auto"
 
 
+class ConversationUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    mode: Mode | None = None
+
+
+class HistorySettings(BaseModel):
+    save_history: bool
+
+
 class InvestigateRequest(BaseModel):
-    session_id: str
+    conversation_id: str = Field(min_length=1, max_length=64)
+    path: str = Field(min_length=1, max_length=4096)  # must match the conversation's project
     question: str = Field(min_length=1, max_length=4000)
+    mode: Mode | None = None  # one-off override (e.g. a GitHub-only follow-up); defaults to the conversation's
 
 
 class DraftCreate(BaseModel):
