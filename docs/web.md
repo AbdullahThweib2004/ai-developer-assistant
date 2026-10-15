@@ -57,6 +57,30 @@ All routes are under `/api` and need the session token.
 | POST | `/drafts/{id}/approve` | `{draft_hash, typed_repo_confirmation, confirm_similar}` |
 | POST | `/drafts/{id}/cancel` | cancel (audited) |
 
+Read-only routes for the explore pages (`app/web/explore.py`). They reuse `ProjectTools` and
+`GitHubTools`, so the MCP project allowlist, the ingestion file rules and the GitHub read
+allowlist all apply. Nothing here writes.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/project/info?path=` | name, path relative to its allowed root, git branch (read from `.git/HEAD`, no git process) |
+| GET | `/project/files?path=` | files the loader allows, marked indexed or not; skipped files as counts only |
+| GET | `/project/file?path=&file=&start=` | read-only file view via `read_project_file` (same limits and refusals) |
+| GET | `/project/search?path=&q=` | semantic search over the index (no LLM), hits with line ranges |
+| GET | `/github/status?repo=` | configured / reachable, read access type, rate limit (cached 60 s) |
+| GET | `/github/issues?repo=&q=&state=` | search (with `q`) or recent issues |
+| GET | `/github/issues/{n}?repo=` | issue with the first and latest comments |
+| GET | `/github/pulls?repo=&state=` / `/github/pulls/{n}` | pull requests, with changed files |
+| GET | `/activity/audit` | issue-creation audit entries: action, repo, result, short draft hash. Never bodies, titles or tokens |
+
+### Line ranges
+
+Every project source has `start_line` and `end_line`. The index stores character
+offsets; the server converts them to lines by reading the file through the same
+`FileLoader.check_path` rules (a refused file gets no range). Chunks can start mid-line:
+for display, the partial first line is dropped and `start_line` moves to the next line,
+so the excerpt always starts at a whole line.
+
 A session runs one investigation at a time (`409 busy` otherwise). Sessions keep the
 conversation memory, the answers (`turn_id`) and their own `IssueApprovalService`.
 
@@ -114,18 +138,46 @@ No key is read and no request leaves the machine.
 
 ## Frontend
 
+The UI follows a light-first design: a lavender canvas with the app as one white
+rounded container. It has a sidebar (navigation and a Workspace card with the real index
+status and live progress), a top bar (project selector, read-only git branch, the
+Ctrl/Cmd+K search and a GitHub status pill that also picks the repository) and the
+pages. Routing is client-side over the History API; the server serves `index.html` for
+every page path. The session (messages, project, repository, mode) lives in one store
+and survives page changes, not page reloads.
+
+| Page | Path | Data |
+|---|---|---|
+| AI Assistant | `/` | `/investigate`, `/ask` streams; Investigation Context from the live events |
+| Overview | `/overview` | `/projects`, `/status`, `/github/status`, this session's answers |
+| Knowledge Base | `/knowledge` | `/projects`, `/project/files`, `/index` |
+| Code Explorer | `/code?file=&start=&end=` | `/project/files`, `/project/file` |
+| GitHub Issues | `/issues?number=` | `/github/issues` |
+| Pull Requests | `/pulls?number=` | `/github/pulls` |
+| Activity | `/activity` | this session's traces, `/activity/audit` |
+| Settings | `/settings` | `/status`, `/github/status` |
+
+Example questions in the empty state come from the selected project: the 401/JWT
+questions only for the demo project; otherwise questions built from its real file
+names (its main modules, its config file, its README).
+
 ```
-frontend/
-├── index.html              # applies the saved/system theme before first paint
-├── vite.config.ts          # React + Tailwind plugins, /api proxy for dev, Vitest config
-├── src/
-│   ├── App.tsx             # state: projects, sessions, messages, panels, drawer
-│   ├── index.css           # design tokens (CSS variables), Tailwind theme, code theme
-│   ├── lib/                # api.ts (fetch + SSE), types, format, citations, highlight, theme
-│   └── components/         # Sidebar, Composer, MessageView, StepTimeline, AnswerView,
-│                           # CitationChip, EvidencePanel, CodeBlock, DraftDrawer, Toasts, ui
-└── e2e/                    # Playwright: app.spec.ts, screenshots.spec.ts (demo backend)
+frontend/src/
+├── App.tsx                 # shell: sidebar, top bar, page, context panel, drawer, palette
+├── index.css               # design tokens (CSS variables), Tailwind theme, code theme
+├── lib/
+│   ├── store.tsx           # app state + actions (APP_NAME lives here)
+│   ├── router.ts           # History API routing
+│   ├── api.ts              # fetch + SSE client
+│   └── examples.ts, format.ts, lines.ts, citations.ts, highlight.ts, theme.ts, types.ts
+├── pages/                  # AssistantPage, CodeExplorerPage, GitHubPages, InfoPages
+└── components/             # NavSidebar, TopBar, Select, CommandPalette, ContextPanel,
+                            # MessageView, AnswerView, SourceCards, StepTimeline, CitationChip,
+                            # DraftDrawer, Trace, FileIcon, Toasts, ui
 ```
+
+All dropdowns use one custom `Select` (a listbox with keyboard support), never a
+native `<select>`.
 
 Development with hot reload:
 
@@ -140,9 +192,9 @@ Tests:
 
 ```bash
 cd frontend
-npm test                 # Vitest: citation chips, step timeline, approval drawer
+npm test                 # Vitest: components (chips, timeline, drawer, select, answer, context) and helpers
 npm run e2e              # Playwright end-to-end against --demo (never approves)
-npm run screenshots      # regenerates docs/images/*.png (dark and light, 1440x900)
+npm run screenshots      # regenerates docs/images/*.png (every page, light and dark, 1440x900)
 ```
 
 Playwright starts the backend with `uv run python -m app.web --demo --port 8799`. Set
@@ -151,18 +203,26 @@ Playwright starts the backend with `uv run python -m app.web --demo --port 8799`
 ### Design tokens
 
 Colors are CSS variables in `src/index.css` (`:root` for light, `.dark` for dark),
-mapped to Tailwind utilities with `@theme inline` (`bg-surface`, `text-muted`,
-`border-border`, `bg-accent`, ...). The theme follows the system setting until you
-pick one in the sidebar.
+mapped to Tailwind utilities with `@theme inline` (`bg-canvas`, `bg-app`, `bg-surface`,
+`bg-bubble`, `text-muted`, `border-border`, `bg-accent`, ...). Light is the default; the
+theme can be switched in the sidebar footer or Settings (light, dark, system).
 
-- **Neutrals:** zinc. **Accent:** indigo (`#4f46e5` light, `#7c7cf0` dark), used only
-  for interactive and "current" state.
-- **Semantic colors** only carry meaning: green for evidence and success, amber for
-  hypotheses and anything that writes to GitHub, red for errors, blocked drafts and
-  invalid citations.
-- **Type:** Inter (UI) and JetBrains Mono (code, paths, numbers), self-hosted through
-  Fontsource.
-- 4/8 px spacing, 8–12 px radii, 150–250 ms transitions, disabled under
-  `prefers-reduced-motion`.
-- Code highlighting uses highlight.js core with a few registered languages: it is
-  synchronous (no layout shift), small, and themed through the same tokens.
+| Token | Light | Use |
+|---|---|---|
+| `--canvas` | `#e9ebf5` | page background around the app container |
+| `--app`, `--surface` | `#ffffff` | app container, cards |
+| `--bg` | `#f8f9fc` | page content area |
+| `--border` | `#e3e5ee` | 1px card borders |
+| `--text` / `--text-muted` / `--text-subtle` | `#171a2b` / `#4a5068` / `#626a82` | text (all AA on white) |
+| `--accent` | `#4f46e5` (dark `#7c7cf6`) | primary buttons, active nav, selection, send button |
+| `--bubble` | `#ebe9fd` | user message bubbles |
+| `--success*` | green | ready / connected / completed / evidence |
+| `--warning*` | amber | hypotheses, warnings, anything that writes to GitHub |
+| `--danger*` | red | errors, blocked drafts, invalid citations |
+
+- **Type:** Inter (UI) and JetBrains Mono (paths, line ranges, code), self-hosted via Fontsource.
+- **Shape:** 16 px app container, 12 px cards, 8 px controls; soft 1px borders and light shadows.
+- **Motion:** 150–250 ms transitions, disabled under `prefers-reduced-motion`.
+- **Code:** highlight.js core with a few registered languages, themed through the same tokens.
+- **Layout:** right panel becomes an overlay below 1200 px; the sidebar collapses to
+  icons (with a compact index button) below 1100 px.

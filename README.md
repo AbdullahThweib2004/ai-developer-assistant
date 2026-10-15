@@ -284,7 +284,7 @@ citations, not hidden.
 
 ### Web app
 
-![Investigation with evidence panel (dark)](docs/images/dark-answer.png)
+![AI Assistant with key findings, source cards and the Investigation Context](docs/images/light-assistant-sources.png)
 
 A local web app over the same code the CLI uses. Try it with no keys and no network:
 
@@ -301,12 +301,26 @@ For real use (your `.env` settings), drop `--demo`:
 uv run ai-dev-assistant web               # or: uv run python -m app.web
 ```
 
-Layout: a sidebar (project switcher with index status, **Index / Rebuild** with live
-progress, GitHub repo from the read allowlist, Auto/Project/GitHub mode, model status),
-the chat (live tool steps, answers split into sections, ranked possible causes marked
-**Evidence** or **Hypothesis**, citation chips with hover previews) and an
-**Evidence** panel (Sources with highlighted code, GitHub issues, and the Trace).
-**Prepare GitHub issue** opens the approval drawer described below.
+Pages (everything shown comes from the project, the index, GitHub or this session):
+
+- **AI Assistant**: ask or investigate. Answers lead with a summary, then **key findings**
+  with file chips and line ranges, ranked causes marked **Evidence** / **Hypothesis**, and a
+  row of source cards. Actions: **Open source** (Code Explorer at the cited lines),
+  **Search GitHub issues** (a GitHub-only follow-up), **Copy answer**, **Draft GitHub
+  issue** (the approval drawer). The **Investigation Context** panel updates live from the
+  stream: RAG retrieval, GitHub MCP, sources, trace and a safety card.
+- **Overview**: indexed projects, file types, models, GitHub status and rate limit,
+  recent investigations.
+- **Knowledge Base**: projects and their files, with index / rebuild and live progress.
+- **Code Explorer**: file tree (only files the loader allows) and a read-only viewer
+  with highlighted line ranges.
+- **GitHub Issues** / **Pull Requests**: read-only search and details for repos in the
+  read allowlist; GitHub text is shown as quoted external content.
+- **Activity**: this session's investigations with traces, and the issue-creation audit
+  log (metadata only).
+- **Settings**: read-only configuration status (no keys, ever) and the theme.
+
+**Ctrl/Cmd+K** searches the project index, GitHub issues and this session's answers.
 
 The server binds to `127.0.0.1` only (another interface needs `--allow-network` and
 prints a warning), checks `Host` and `Origin`, and requires a per-launch session token
@@ -321,13 +335,23 @@ cd frontend && npm run dev                # http://localhost:5173
 
 #### Screenshots
 
-| | Dark | Light |
+Demo mode, 1440×900. Light is the default theme.
+
+| | Light | Dark |
 |---|---|---|
-| Empty state | ![](docs/images/dark-empty.png) | ![](docs/images/light-empty.png) |
-| In progress | ![](docs/images/dark-in-progress.png) | ![](docs/images/light-in-progress.png) |
-| Answer + Sources | ![](docs/images/dark-answer.png) | ![](docs/images/light-answer.png) |
-| Trace | ![](docs/images/dark-trace.png) | ![](docs/images/light-trace.png) |
-| Issue draft | ![](docs/images/dark-draft.png) | ![](docs/images/light-draft.png) |
+| Assistant (empty) | ![](docs/images/light-assistant-empty.png) | ![](docs/images/dark-assistant-empty.png) |
+| Investigation running | ![](docs/images/light-assistant-running.png) | ![](docs/images/dark-assistant-running.png) |
+| Answer | ![](docs/images/light-assistant-answer.png) | ![](docs/images/dark-assistant-answer.png) |
+| Source cards | ![](docs/images/light-assistant-sources.png) | ![](docs/images/dark-assistant-sources.png) |
+| Command palette | ![](docs/images/light-command-palette.png) | ![](docs/images/dark-command-palette.png) |
+| Approval drawer | ![](docs/images/light-approval-drawer.png) | ![](docs/images/dark-approval-drawer.png) |
+| Code Explorer | ![](docs/images/light-code-explorer.png) | ![](docs/images/dark-code-explorer.png) |
+| Overview | ![](docs/images/light-overview.png) | ![](docs/images/dark-overview.png) |
+| Knowledge Base | ![](docs/images/light-knowledge-base.png) | ![](docs/images/dark-knowledge-base.png) |
+| GitHub Issues | ![](docs/images/light-github-issues.png) | ![](docs/images/dark-github-issues.png) |
+| Pull Requests | ![](docs/images/light-pull-requests.png) | ![](docs/images/dark-pull-requests.png) |
+| Activity | ![](docs/images/light-activity.png) | ![](docs/images/dark-activity.png) |
+| Settings | ![](docs/images/light-settings.png) | ![](docs/images/dark-settings.png) |
 
 Regenerate with `cd frontend && npm run screenshots` (runs against `--demo`).
 > `docs/images/ui-insufficient.png`: an insufficient-evidence answer
@@ -598,6 +622,7 @@ ai-developer-assistant/
 │   │   ├── security.py         # Host/Origin checks, session token, path allowlist
 │   │   ├── sessions.py         # runtime + per-session investigators and approvals
 │   │   ├── schemas.py          # request/response models, answer parsing
+│   │   ├── explore.py          # read-only routes: files, viewer, search, GitHub, audit
 │   │   └── demo.py             # --demo: fake LLM, embeddings, GitHub
 │   ├── mcp_server/
 │   │   ├── server.py           # MCPServer + tool registration (stdio)
