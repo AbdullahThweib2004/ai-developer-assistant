@@ -329,7 +329,8 @@ def build_router(sessions: SessionManager, store: ConversationStore) -> APIRoute
     @router.get("/conversations")
     def list_conversations(path: str) -> dict[str, Any]:
         project = project_for(path)
-        return {"project": str(project), "conversations": store.list(project), "save_history": store.save_history}
+        return {"project": str(project), "conversations": store.for_project(project),
+                "save_history": store.save_history}
 
     @router.post("/conversations")
     def create_conversation(body: schemas.ConversationCreate) -> dict[str, Any]:
@@ -368,14 +369,14 @@ def build_router(sessions: SessionManager, store: ConversationStore) -> APIRoute
     @router.delete("/conversations")
     def clear_project_conversations(path: str) -> dict[str, Any]:
         project = project_for(path)
-        for conversation in store.list(project):
+        for conversation in store.for_project(project):
             sessions.drop_conversation(conversation["id"])
         return {"deleted": store.clear(project)}
 
     @router.delete("/history")
     def clear_history() -> dict[str, Any]:
         for project in {Path(c["project"]) for c in store.all_conversations()}:
-            for conversation in store.list(project):
+            for conversation in store.for_project(project):
                 sessions.drop_conversation(conversation["id"])
         return {"deleted": store.clear()}
 

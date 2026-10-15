@@ -145,7 +145,7 @@ class ConversationStore:
             out["messages"] = messages
         return out
 
-    def list(self, project: Path) -> list[dict[str, Any]]:
+    def for_project(self, project: Path) -> list[dict[str, Any]]:
         rows = []
         for db in (self._memory, self._disk):
             rows += [self._out(r, r["n"]) for r in db.execute(
