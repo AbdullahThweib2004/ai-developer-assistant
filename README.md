@@ -1,24 +1,69 @@
 # AI Developer Assistant
 
+[![CI](https://github.com/AbdullahThweib2004/ai-developer-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/AbdullahThweib2004/ai-developer-assistant/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 An AI developer assistant that combines **Retrieval-Augmented Generation (RAG)** with the
 **Model Context Protocol (MCP)** to help engineers understand codebases. It indexes a
 repository's code and documentation, answers questions using the retrieved code as
 cited context, and helps investigate errors. Through an MCP server it works with GitHub
 issues and pull requests, and any write action needs explicit human approval.
 
-> **Status:** Phases 1–7 are complete. An investigating assistant (CLI `investigate` and
-> `chat`, plus a local web app) decides whether to search the local project, GitHub, both
-> or neither. It runs through a bounded, traced tool-use loop over the project's own MCP
-> server, and every answer has validated citations. It can **draft** a GitHub issue from
-> its findings; the issue is created only after you approve the exact draft. Phase 8
-> (evaluation, security and documentation) is next.
+**The demo story.** A FastAPI service answers `401` to `/users/me` even with a valid bearer
+token. You ask why. The assistant searches the project, reads `app/auth.py` and
+`app/config.py`, and checks FastAPI's GitHub issues, streaming each step as it goes. It
+answers with two cited causes (a case-sensitive `bearer` check and a secret read from the
+wrong environment variable) and treats the GitHub issues as leads, not proof. You open the cited
+lines in the Code Explorer, draft a GitHub issue from the findings, and the issue is created
+only after you type the repository name to approve it.
 
-## Key features (planned)
+![AI Assistant: key findings, source cards and the Investigation Context](docs/images/light-assistant-sources.png)
 
-- **Codebase understanding**: ask questions about a repository and get answers grounded in its code, with file references.
+## Quickstart (demo mode, no keys)
+
+Needs [uv](https://docs.astral.sh/uv/) and Node.js 20.19+ (for building the web UI).
+
+```bash
+git clone https://github.com/AbdullahThweib2004/ai-developer-assistant.git
+cd ai-developer-assistant
+uv sync                                              # Python deps (CPU-only torch)
+(cd frontend && npm ci && npm run build)             # build the web UI once
+uv run ai-dev-assistant web --demo                   # open http://127.0.0.1:8765
+```
+
+`--demo` needs no `.env`, no API keys and no network: it uses fake embeddings, a scripted
+LLM and mocked GitHub against `examples/fastapi-auth-demo`, and it never creates a real
+issue. Click **Index project**, then the first example question. For real use, configure
+`.env` (see [Configuration](#configuration)) and run `uv run ai-dev-assistant web`.
+
+## Results
+
+| Evaluation | Result |
+|---|---|
+| Prompt-injection cases (6, live) | **0** forbidden tool calls, **0** leaks, **0** unrequested issue drafts |
+| Orchestration (12, live) | tool selection 0.917, citation validity 1.0, expected evidence 1.0 |
+| Retrieval, sample project (12) | Recall@5 1.000, MRR 0.958 |
+| Retrieval, this repository (15) | Recall@5 0.867, MRR 0.549 |
+
+Details, methods and known weaknesses: **[docs/evaluation.md](docs/evaluation.md)**.
+
+## Security in short
+
+Everything the assistant reads (code, docs, GitHub text) is untrusted data; the model only
+gets read-only tools and cannot choose the project or repository. `.env` and other secrets
+are never read or indexed. Issue creation is off by default and needs a separate token, a
+write allowlist, and a human typing the repository name; approvals are single-use and bound
+to the exact draft. The web API binds to `127.0.0.1` and requires a per-launch token. Threats,
+mitigations, tests and limitations: **[docs/security.md](docs/security.md)**.
+
+## Key features
+
+- **Codebase understanding**: ask questions about a repository and get answers grounded in its code, with file references and line ranges.
 - **Documentation search**: semantic search across Markdown, text, config files and PDFs.
-- **Error investigation**: paste a stack trace and get the relevant code paths and likely causes.
+- **Error investigation**: describe a bug or paste a stack trace and get the relevant code paths and ranked likely causes.
 - **GitHub workflows**: read issues and pull requests through an MCP server; draft new issues for human review.
+- **Web app, CLI and MCP server**: the same tools from a browser, a terminal or any MCP client.
 - **Safe by design**: read-only by default, no code execution, secrets filtered out before indexing.
 
 ## Roadmap
@@ -32,7 +77,7 @@ issues and pull requests, and any write action needs explicit human approval.
 | 5 | GitHub integration (read-only) | ✅ Done |
 | 6 | RAG + MCP orchestration | ✅ Done |
 | 7 | Human-approved issue creation | ✅ Done |
-| 8 | Evaluation, security & documentation | ⏭️ Next |
+| 8 | Evaluation, security & documentation | ✅ Done |
 
 ## Architecture
 
@@ -651,7 +696,9 @@ ai-developer-assistant/
 │   ├── answer_questions.json   # answerable + unanswerable questions
 │   ├── evaluate_answers.py     # automatic answer checks + review sheet
 │   ├── orchestration_questions.json  # tool-selection cases (project / GitHub / both / none)
-│   └── evaluate_orchestration.py
+│   ├── evaluate_orchestration.py
+│   ├── adversarial_cases.json  # prompt-injection cases (fixed before running)
+│   └── evaluate_adversarial.py # forbidden calls, leaks, unrequested drafts
 ├── tests/
 │   ├── fixtures/sample_project/  # small fake repository used by tests
 │   └── test_*.py
@@ -662,6 +709,9 @@ ai-developer-assistant/
 │   ├── orchestration.md        # tool loop, limits, untrusted content, trace, memory
 │   ├── approval.md             # issue creation threat model and approval flow
 │   ├── web.md                  # web app: API, SSE events, local security, frontend
+│   ├── security.md             # trust boundaries, threats, mitigations, limitations
+│   ├── evaluation.md           # evaluation results and known weaknesses
+│   ├── demo_script.md          # 2–3 minute demo video script
 │   ├── images/                 # web app screenshots
 │   └── pending_live_checks.md  # live checks to repeat (LLM, GitHub writes)
 ├── .env.example
