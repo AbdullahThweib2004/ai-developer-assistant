@@ -1,6 +1,6 @@
 """Human approval for GitHub issue creation. App code only: no LLM tool reaches this.
 
-The flow (used by the CLI and the Streamlit UI):
+The flow (used by the CLI and the web app):
 
     draft  ->  approve(draft_id, typed repo name)  ->  submit(approval_id)
                  one-time, short-lived record          re-validate, similar-issue check,

@@ -1,6 +1,6 @@
 """Answer questions about a project: retrieve -> build context -> prompt -> generate -> validate.
 
-This is the single entry point used by both the CLI and the Streamlit UI.
+This is the single entry point used by both the CLI and the web app.
 """
 
 import logging

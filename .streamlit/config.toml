@@ -1,7 +1,0 @@
-# Serve the UI on this machine only; it can read local repositories.
-[server]
-address = "localhost"
-headless = true
-
-[browser]
-gatherUsageStats = false
