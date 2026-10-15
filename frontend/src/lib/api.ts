@@ -1,5 +1,5 @@
 import type {
-  ApiErrorInfo, AuditEntry, Draft, FileView, GitHubStatus, IssueDetail, IssueSummary, Mode, Project, ProjectFiles,
+  ApiErrorInfo, AuditEntry, Conversation, Draft, FileView, GitHubStatus, IssueDetail, IssueSummary, Mode, Project, ProjectFiles,
   ProjectInfo, PullDetail, PullSummary, RateLimit, SearchHit, SimilarIssue, Status, SubmissionResult,
 } from "./types";
 
@@ -77,9 +77,19 @@ const qs = (params: Record<string, string | number | null | undefined>) =>
 export const api = {
   status: () => request<Status>("GET", "/api/status"),
   projects: () => request<{ projects: Project[] }>("GET", "/api/projects"),
-  createSession: (path: string, repo: string | null, mode: Mode) =>
-    request<{ id: string; tools: string[]; repo: string | null }>("POST", "/api/sessions", { path, repo, mode }),
-  deleteSession: (id: string) => request<{ deleted: boolean }>("DELETE", `/api/sessions/${id}`),
+  conversations: (path: string) =>
+    request<{ project: string; conversations: Conversation[]; save_history: boolean }>("GET", `/api/conversations?${qs({ path })}`),
+  createConversation: (path: string, repo: string | null, mode: Mode) =>
+    request<Conversation>("POST", "/api/conversations", { path, repo, mode }),
+  conversation: (id: string) => request<Conversation>("GET", `/api/conversations/${id}`),
+  updateConversation: (id: string, change: { title?: string; mode?: Mode }) =>
+    request<Conversation>("PATCH", `/api/conversations/${id}`, change),
+  deleteConversation: (id: string) => request<{ deleted: boolean }>("DELETE", `/api/conversations/${id}`),
+  clearConversations: (path: string) => request<{ deleted: number }>("DELETE", `/api/conversations?${qs({ path })}`),
+  clearHistory: () => request<{ deleted: number }>("DELETE", "/api/history"),
+  historySettings: () => request<{ save_history: boolean }>("GET", "/api/history/settings"),
+  setHistorySettings: (saveHistory: boolean) =>
+    request<{ save_history: boolean }>("PUT", "/api/history/settings", { save_history: saveHistory }),
   prepareDraft: (sessionId: string, turnId: string) =>
     request<Draft>("POST", `/api/sessions/${sessionId}/drafts`, { turn_id: turnId }),
   editDraft: (id: string, title: string, body: string, labels: string[]) =>

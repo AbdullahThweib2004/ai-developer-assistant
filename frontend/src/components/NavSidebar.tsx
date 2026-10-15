@@ -4,9 +4,10 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { compact } from "../lib/format";
-import { navigate, type Route } from "../lib/router";
+import { navigate, navigateChat, type Route } from "../lib/router";
 import { APP_NAME, useApp } from "../lib/store";
 import type { ThemeChoice } from "../lib/theme";
+import { ConversationList } from "./ConversationList";
 import { GithubMark } from "./GithubMark";
 import { Logo } from "./Logo";
 import { Button, IconButton, StatusDot, cx } from "./ui";
@@ -108,6 +109,7 @@ function CompactWorkspace() {
 }
 
 export function NavSidebar({ route, collapsed, onToggle }: { route: Route; collapsed: boolean; onToggle: () => void }) {
+  const { activeConversationId } = useApp();
   return (
     <nav aria-label="Main" className={cx("flex h-full shrink-0 flex-col border-r border-border bg-bg-subtle transition-[width] duration-200",
       collapsed ? "w-[64px]" : "w-[248px]")}>
@@ -115,18 +117,22 @@ export function NavSidebar({ route, collapsed, onToggle }: { route: Route; colla
         <Logo size={26} />
         {!collapsed && <span className="text-[16px] font-semibold tracking-[-0.015em] text-fg">{APP_NAME}</span>}
       </div>
-      <ul className={cx("flex-1 space-y-1 overflow-y-auto pt-3", collapsed ? "px-2" : "px-3")}>
+      <ul className={cx("shrink-0 space-y-0.5 pt-2", collapsed ? "px-2" : "px-3")}>
         {NAV.map((item) => {
           const active = item.route === route;
           return (
             <li key={item.route}>
               <a
                 href={item.route === "assistant" ? "/" : `/${item.route}`}
-                onClick={(e) => { e.preventDefault(); navigate(item.route); }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (item.route === "assistant") navigateChat(activeConversationId);
+                  else navigate(item.route);
+                }}
                 aria-current={active ? "page" : undefined}
                 title={collapsed ? item.label : undefined}
                 className={cx(
-                  "relative flex h-10 items-center gap-3 rounded-lg text-[14px] transition-colors duration-150",
+                  "relative flex h-9 items-center gap-3 rounded-lg text-[14px] transition-colors duration-150",
                   collapsed ? "justify-center" : "px-3",
                   active ? "bg-accent-soft font-medium text-accent-text" : "text-muted hover:bg-surface-2 hover:text-fg",
                 )}
@@ -139,7 +145,10 @@ export function NavSidebar({ route, collapsed, onToggle }: { route: Route; colla
           );
         })}
       </ul>
-      <div className={cx("space-y-2 pb-4", collapsed ? "px-2" : "px-3")}>
+      {collapsed ? <div className="flex-1" /> : (
+        <div className="mt-3 flex min-h-[96px] flex-1 flex-col border-t border-border px-3 pt-3"><ConversationList /></div>
+      )}
+      <div className={cx("space-y-2 pb-4 pt-2", collapsed ? "px-2" : "px-3")}>
         {collapsed ? <CompactWorkspace /> : <WorkspaceCard />}
         <div className={cx("flex items-center", collapsed ? "flex-col gap-1" : "justify-between px-1")}>
           <ThemeButton compactView={collapsed} />

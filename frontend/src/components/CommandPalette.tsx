@@ -2,7 +2,7 @@ import { Bot, CircleDot, CornerDownLeft, FileCode2, Search } from "lucide-react"
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { linesLabel } from "../lib/lines";
-import { navigate } from "../lib/router";
+import { navigate, navigateChat } from "../lib/router";
 import { useApp } from "../lib/store";
 import type { IssueSummary, SearchHit } from "../lib/types";
 import { FileIcon } from "./FileIcon";
@@ -13,7 +13,7 @@ interface Item { id: string; group: string; icon: ReactNode; title: string; deta
 
 /** Ctrl/Cmd+K: searches the project index, GitHub issues in the selected repo, and this session's answers. */
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen, project, repo, messages, openCode, setActiveMessageId, status } = useApp();
+  const { paletteOpen, setPaletteOpen, project, repo, messages, openCode, setActiveMessageId, status, activeConversationId } = useApp();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [issues, setIssues] = useState<IssueSummary[]>([]);
@@ -67,7 +67,7 @@ export function CommandPalette() {
         const text = `${m.question}\n${m.answer?.answer_markdown ?? ""}`.toLowerCase();
         if (text.includes(q)) {
           out.push({ id: `a-${m.id}`, group: "Answers in this session", icon: <Bot size={14} className="text-accent-text" />, title: m.question,
-            detail: m.answer ? `${m.answer.project_sources.length} sources` : m.status, run: () => { setActiveMessageId(m.id); navigate("assistant"); } });
+            detail: m.answer ? `${m.answer.project_sources.length} sources` : m.status, run: () => { setActiveMessageId(m.id); navigateChat(activeConversationId); } });
         }
       }
     }
@@ -77,7 +77,7 @@ export function CommandPalette() {
       }
     }
     return out;
-  }, [hits, issues, messages, query, repo, openCode, setActiveMessageId]);
+  }, [hits, issues, messages, query, repo, openCode, setActiveMessageId, activeConversationId]);
 
   useEffect(() => { setActive(0); }, [items.length]);
   useEffect(() => {

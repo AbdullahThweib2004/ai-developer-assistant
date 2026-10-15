@@ -7,7 +7,7 @@ import { TraceTable, TraceTotals } from "../components/Trace";
 import { Badge, Button, Card, EmptyNote, PageHeader, SkeletonRows, StatusDot, Tag, cx } from "../components/ui";
 import { api, ApiError } from "../lib/api";
 import { compact, seconds } from "../lib/format";
-import { navigate } from "../lib/router";
+import { navigate, navigateChat } from "../lib/router";
 import { useApp } from "../lib/store";
 import type { ThemeChoice } from "../lib/theme";
 import type { AuditEntry, ProjectFiles } from "../lib/types";
@@ -57,7 +57,7 @@ function FileTypeBars({ types }: { types: Record<string, number> }) {
 // ---- Overview ----------------------------------------------------------------------------------
 
 export function OverviewPage() {
-  const { projects, project, status, githubStatus, messages, repo } = useApp();
+  const { projects, project, status, githubStatus, messages, repo, activeConversationId } = useApp();
   const indexed = projects.filter((p) => p.indexed);
   const investigations = messages.filter((m) => m.answer);
   const rate = githubStatus?.rate_limit;
@@ -123,7 +123,7 @@ export function OverviewPage() {
           <Card className="divide-y divide-border">
             {investigations.length === 0 ? <EmptyNote title="No investigations yet" hint="Ask something on the AI Assistant page." /> :
               investigations.slice(-5).reverse().map((m) => (
-                <button key={m.id} type="button" onClick={() => navigate("assistant")} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2">
+                <button key={m.id} type="button" onClick={() => navigateChat(activeConversationId)} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2">
                   <Bot size={15} className="shrink-0 text-subtle" />
                   <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{m.question}</span>
                   <span className="shrink-0 font-mono text-[11.5px] text-muted">{m.answer?.totals ? seconds(m.answer.totals.latency_ms) : ""}</span>
@@ -291,7 +291,8 @@ export function ActivityPage() {
 // ---- Settings -------------------------------------------------------------------------------------
 
 export function SettingsPage() {
-  const { status, theme, setTheme, githubStatus } = useApp();
+  const { status, theme, setTheme, githubStatus, saveHistory, updateSaveHistory, clearHistory } = useApp();
+  const [confirmClear, setConfirmClear] = useState(false);
   const yesNo = (v: boolean | undefined, on = "enabled", off = "disabled") => v ? <Tag tone="success">{on}</Tag> : <Tag>{off}</Tag>;
   return (
     <Page testId="page-settings">
@@ -303,6 +304,29 @@ export function SettingsPage() {
             <div><div className="text-[13.5px] font-medium text-fg">Theme</div><div className="text-[12.5px] text-muted">Light is the default.</div></div>
             <Select<ThemeChoice> label="Theme" value={theme} onChange={setTheme} className="w-[150px]" align="right" testId="theme-select"
               options={[{ value: "light", label: "Light" }, { value: "dark", label: "Dark" }, { value: "system", label: "System" }]} />
+          </Card>
+          <SectionTitle>Conversation history</SectionTitle>
+          <Card className="divide-y divide-border" data-testid="history-settings">
+            <label className="flex cursor-pointer items-center justify-between gap-4 p-4">
+              <span>
+                <span className="block text-[13.5px] font-medium text-fg">Save conversation history</span>
+                <span className="block text-[12.5px] text-muted">Stored locally in DATA_DIR/conversations.db (file mode 600). It can contain code excerpts; keys and tokens are redacted.</span>
+              </span>
+              <input type="checkbox" role="switch" checked={saveHistory} onChange={(e) => void updateSaveHistory(e.target.checked)}
+                aria-label="Save conversation history" data-testid="save-history" className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
+            </label>
+            <div className="flex items-center justify-between gap-4 p-4">
+              <span className="text-[12.5px] text-muted">{saveHistory ? "New conversations are saved." : "New conversations are kept only until the server stops."}</span>
+              {confirmClear ? (
+                <span className="flex items-center gap-2" role="alertdialog" aria-label="Clear history">
+                  <span className="text-[12.5px] text-fg">Delete all conversations?</span>
+                  <Button size="sm" variant="secondary" onClick={() => setConfirmClear(false)}>Cancel</Button>
+                  <Button size="sm" variant="danger-ghost" onClick={() => { setConfirmClear(false); void clearHistory(); }} data-testid="confirm-clear-history">Delete all</Button>
+                </span>
+              ) : (
+                <Button size="sm" variant="secondary" onClick={() => setConfirmClear(true)} data-testid="clear-history">Clear history</Button>
+              )}
+            </div>
           </Card>
           <SectionTitle>Language model</SectionTitle>
           <Card className="px-4 py-1"><dl>

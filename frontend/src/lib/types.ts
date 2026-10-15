@@ -210,3 +210,31 @@ export interface AuditEntry {
   timestamp: string; action: string; repo: string; channel: string; draft_hash: string; title_length: number;
   issue_number?: number | null; issue_url?: string | null; error_category?: string | null;
 }
+
+export interface Conversation {
+  id: string;
+  project: string;
+  repo: string | null;
+  mode: Mode;
+  title: string;
+  created: number;
+  updated: number;
+  message_count: number;
+  saved?: boolean;
+  messages?: StoredMessage[];
+}
+
+/** One finished turn as stored on the server (secrets redacted, no approvals). */
+export interface StoredMessage {
+  id: string;
+  kind: "investigate" | "quick";
+  question: string;
+  mode: Mode;
+  repo: string | null;
+  status: "done" | "error" | "cancelled";
+  answer?: any;
+  error?: ApiErrorInfo;
+  session_id?: string;
+  started_at: number;
+  finished_at: number;
+}

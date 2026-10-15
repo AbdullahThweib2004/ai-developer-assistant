@@ -1,10 +1,10 @@
-import { CircleDot, FileSearch, ShieldCheck } from "lucide-react";
+import { CircleDot, FileSearch, FolderGit2, ShieldCheck } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
 import { Composer, type ComposerHandle } from "../components/Composer";
 import { MessageView, type MessageActions } from "../components/MessageView";
 import { StatusDot } from "../components/ui";
 import { exampleQuestions } from "../lib/examples";
-import { navigate } from "../lib/router";
+import { navigate, navigateChat, useLocation } from "../lib/router";
 import { useApp } from "../lib/store";
 import type { Source } from "../lib/types";
 
@@ -23,7 +23,16 @@ function IndexPill() {
 
 export function AssistantPage({ composerRef }: { composerRef: RefObject<ComposerHandle | null> }) {
   const app = useApp();
-  const { messages, project, status, running, send, stop, chatMode, setChatMode, openCode, prepareIssue, setActiveMessageId, repo } = app;
+  const { messages, project, status, running, send, stop, chatMode, setChatMode, openCode, prepareIssue, setActiveMessageId, repo,
+    activeConversation, activeConversationId, openConversation, booted } = app;
+  const { chatId } = useLocation();
+
+  // Keep the URL and the open conversation in sync (back/forward, links, reload).
+  useEffect(() => {
+    if (!booted) return;
+    if (chatId && chatId !== activeConversationId) void openConversation(chatId);
+    else if (!chatId && activeConversationId) navigateChat(activeConversationId, true);
+  }, [chatId, booted]); // eslint-disable-line react-hooks/exhaustive-deps
   const thread = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const githubAvailable = !!repo && (status?.github.read_repos.length ?? 0) > 0;
@@ -81,6 +90,13 @@ export function AssistantPage({ composerRef }: { composerRef: RefObject<Composer
             </div>
             <IndexPill />
           </div>
+          <div className="flex flex-wrap items-center gap-2 pt-3 text-[12.5px] text-muted" data-testid="conversation-scope"
+            title={`This conversation belongs to ${project?.path ?? "no project"}. Answers only use this project's files.`}>
+            <FolderGit2 size={14} className="text-subtle" />
+            <span>{activeConversation ? (activeConversation.title || "Conversation") : "New conversation"} in</span>
+            <span className="rounded-md bg-accent-soft px-1.5 py-0.5 font-medium text-accent-text" data-testid="conversation-project">{project?.name ?? "no project"}</span>
+            {(activeConversation?.repo ?? repo) && <span className="font-mono text-[12px]">· {activeConversation?.repo ?? repo}</span>}
+          </div>
 
           {messages.length === 0 ? (
             <div className="animate-fade-up py-8" data-testid="empty-state">
@@ -116,7 +132,7 @@ export function AssistantPage({ composerRef }: { composerRef: RefObject<Composer
         </div>
       </div>
       <div className="mx-auto w-full max-w-[780px] px-8 pb-5 pt-2">
-        <Composer ref={composerRef} running={running} onSend={submit} onStop={stop} mode={chatMode} onMode={setChatMode}
+        <Composer key={`${project?.path}:${activeConversationId ?? "new"}`} ref={composerRef} running={running} onSend={submit} onStop={stop} mode={chatMode} onMode={setChatMode}
           githubAvailable={githubAvailable} disabled={!project || notIndexed}
           disabledReason={!project ? "Choose a project first" : "Index this project first (sidebar → Index project)"} />
       </div>
