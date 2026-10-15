@@ -5,71 +5,90 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ---- Design tokens --------------------------------------------------------
-   Neutral (zinc-based) surfaces, one accent (indigo), semantic colors only for
-   meaning: green = evidence/success, amber = hypothesis/warning, red = error. */
+   Light is the primary theme: a lavender canvas, the app as one white rounded
+   container, soft-bordered white cards. One accent (indigo/violet); semantic
+   colors only for meaning: green = ready/connected/evidence, amber =
+   hypothesis/warning/writes, red = error. All text pairs meet WCAG AA. */
 :root {
-  --bg: #fafafa;
-  --bg-subtle: #f4f4f5;
+  --canvas: #e9ebf5;
+  --canvas-2: #f1eff9;
+  --app: #ffffff;
+  --bg: #f8f9fc;
+  --bg-subtle: #f9f9fc;
   --surface: #ffffff;
-  --surface-2: #f6f6f7;
-  --surface-3: #ececee;
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
-  --text: #18181b;
-  --text-muted: #52525b;
-  --text-subtle: #71717a;
+  --surface-2: #f4f5f9;
+  --surface-3: #e9ebf2;
+  --border: #e3e5ee;
+  --border-strong: #cfd3e0;
+  --text: #171a2b;
+  --text-muted: #4a5068;
+  --text-subtle: #626a82;
   --accent: #4f46e5;
   --accent-hover: #4338ca;
   --accent-fg: #ffffff;
-  --accent-soft: #eef0ff;
+  --accent-soft: #eceafe;
+  --accent-soft-2: #e2defd;
   --accent-text: #4338ca;
+  --bubble: #ebe9fd;
   --success: #15803d;
-  --success-soft: #ecfdf3;
-  --success-border: #bbe5c8;
-  --warning: #a16207;
-  --warning-soft: #fefce8;
-  --warning-border: #f1dc8f;
+  --success-dot: #22c55e;
+  --success-soft: #e9f8ef;
+  --success-border: #b8e5c8;
+  --warning: #9a5b04;
+  --warning-soft: #fdf6e3;
+  --warning-border: #f0d78f;
   --danger: #b91c1c;
   --danger-soft: #fef2f2;
   --danger-border: #f4c7c7;
-  --ring: rgb(79 70 229 / 0.45);
-  --shadow-color: 240 6% 10%;
-  --code-bg: #f8f8f9;
-  --overlay: rgb(9 9 11 / 0.32);
+  --ring: rgb(79 70 229 / 0.4);
+  --shadow-color: 232 30% 30%;
+  --code-bg: #f8f9fc;
+  --overlay: rgb(23 26 43 / 0.28);
 }
 
 .dark {
-  --bg: #09090b;
-  --bg-subtle: #0d0d10;
-  --surface: #111114;
-  --surface-2: #17171b;
-  --surface-3: #202026;
-  --border: #23232a;
-  --border-strong: #32323b;
-  --text: #f4f4f5;
-  --text-muted: #a1a1aa;
-  --text-subtle: #8a8a94;
-  --accent: #7c7cf0;
-  --accent-hover: #9393f5;
-  --accent-fg: #0b0b12;
-  --accent-soft: #1b1b33;
-  --accent-text: #a5a5fa;
+  --canvas: #07070b;
+  --canvas-2: #0b0a14;
+  --app: #0e0f15;
+  --bg: #0e0f15;
+  --bg-subtle: #11121a;
+  --surface: #15161f;
+  --surface-2: #1b1c27;
+  --surface-3: #242533;
+  --border: #252736;
+  --border-strong: #353849;
+  --text: #f1f2f8;
+  --text-muted: #b0b4c7;
+  --text-subtle: #8f94aa;
+  --accent: #7c7cf6;
+  --accent-hover: #9595f8;
+  --accent-fg: #0b0b14;
+  --accent-soft: #1f1f3d;
+  --accent-soft-2: #2a2a52;
+  --accent-text: #b0b0fc;
+  --bubble: #23224a;
   --success: #4ade80;
-  --success-soft: #0d1f15;
-  --success-border: #1d4a2e;
+  --success-dot: #22c55e;
+  --success-soft: #0e2117;
+  --success-border: #1f4d31;
   --warning: #fbbf24;
-  --warning-soft: #221a07;
+  --warning-soft: #241b07;
   --warning-border: #4d3a10;
   --danger: #f87171;
-  --danger-soft: #251010;
+  --danger-soft: #261111;
   --danger-border: #5a2222;
-  --ring: rgb(124 124 240 / 0.55);
+  --ring: rgb(124 124 246 / 0.55);
   --shadow-color: 0 0% 0%;
-  --code-bg: #0c0c0f;
+  --code-bg: #101119;
   --overlay: rgb(0 0 0 / 0.55);
 }
 
 @theme inline {
+  --color-canvas: var(--canvas);
+  --color-app: var(--app);
+  --color-bubble: var(--bubble);
+  --color-accent-soft-2: var(--accent-soft-2);
+  --color-success-dot: var(--success-dot);
   --color-bg: var(--bg);
   --color-bg-subtle: var(--bg-subtle);
   --color-surface: var(--surface);
@@ -102,7 +121,10 @@
   --radius-md: 8px;
   --radius-lg: 10px;
   --radius-xl: 12px;
+  --radius-2xl: 16px;
   --shadow-soft: 0 1px 2px hsl(var(--shadow-color) / 0.06), 0 1px 1px hsl(var(--shadow-color) / 0.04);
+  --shadow-card: 0 1px 2px hsl(var(--shadow-color) / 0.05), 0 2px 8px -2px hsl(var(--shadow-color) / 0.06);
+  --shadow-app: 0 1px 2px hsl(var(--shadow-color) / 0.06), 0 12px 40px -12px hsl(var(--shadow-color) / 0.22);
   --shadow-pop: 0 10px 30px -12px hsl(var(--shadow-color) / 0.35), 0 2px 6px hsl(var(--shadow-color) / 0.08);
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -110,7 +132,7 @@
 @layer base {
   html, body, #root { height: 100%; }
   body {
-    background: var(--bg);
+    background: radial-gradient(1200px 600px at 10% 0%, var(--canvas-2), transparent 60%), var(--canvas);
     color: var(--text);
     font-family: var(--font-sans);
     font-size: 14px;

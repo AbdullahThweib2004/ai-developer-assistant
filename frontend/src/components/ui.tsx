@@ -1,4 +1,5 @@
 import { Check, Copy, Loader2 } from "lucide-react";
+import type React from "react";
 import { type ButtonHTMLAttributes, type ReactNode, useState } from "react";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -162,4 +163,70 @@ export function CopyButton({ text, label = "Copy", className }: { text: string; 
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-subtle">{children}</div>;
+}
+
+export function StatusDot({ tone, pulse, className }: { tone: "success" | "accent" | "warning" | "danger" | "neutral"; pulse?: boolean; className?: string }) {
+  const color = { success: "bg-success-dot", accent: "bg-accent", warning: "bg-warning", danger: "bg-danger", neutral: "bg-border-strong" }[tone];
+  const halo = { success: "bg-success-soft", accent: "bg-accent-soft", warning: "bg-warning-soft", danger: "bg-danger-soft", neutral: "bg-surface-2" }[tone];
+  return (
+    <span className={cx("relative inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full", halo, className)} aria-hidden>
+      <span className={cx("h-2 w-2 rounded-full", color, pulse && "dot-pulse")} />
+    </span>
+  );
+}
+
+/** Small colored tag, e.g. "Project knowledge". */
+export function Tag({ tone = "neutral", children, className }: { tone?: "neutral" | "accent" | "success" | "warning"; children: ReactNode; className?: string }) {
+  const tones = {
+    neutral: "bg-surface-2 text-muted",
+    accent: "bg-accent-soft text-accent-text",
+    success: "bg-success-soft text-success",
+    warning: "bg-warning-soft text-warning",
+  };
+  return <span className={cx("inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-[11.5px] font-medium", tones[tone], className)}>{children}</span>;
+}
+
+export function Card({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div {...props} className={cx("rounded-xl border border-border bg-surface shadow-card", className)}>{children}</div>;
+}
+
+/** Small mono chip for file names, line ranges and code identifiers. */
+export function Chip({ children, className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { children: ReactNode }) {
+  const base = "inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-surface-2 px-1.5 py-px font-mono text-[11.5px] text-fg";
+  if (!props.onClick) return <span className={cx(base, className)}>{children}</span>;
+  return (
+    <button type="button" {...props} className={cx(base, "transition-colors hover:border-accent/50 hover:bg-accent-soft hover:text-accent-text", className)}>
+      {children}
+    </button>
+  );
+}
+
+export function PageHeader({ title, subtitle, right }: { title: string; subtitle?: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-fg">{title}</h1>
+        {subtitle && <p className="mt-1 text-[13.5px] text-muted">{subtitle}</p>}
+      </div>
+      {right}
+    </div>
+  );
+}
+
+export function EmptyNote({ icon, title, hint }: { icon?: ReactNode; title: string; hint?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
+      {icon && <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-surface-2 text-subtle">{icon}</div>}
+      <div className="text-[14px] font-medium text-fg">{title}</div>
+      {hint && <div className="mt-1 max-w-[420px] text-[13px] text-muted">{hint}</div>}
+    </div>
+  );
+}
+
+export function SkeletonRows({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="space-y-2.5" aria-hidden>
+      {Array.from({ length: rows }, (_, i) => <div key={i} className="skeleton h-4" style={{ width: `${92 - ((i * 17) % 40)}%` }} />)}
+    </div>
+  );
 }

@@ -3,19 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="light dark" />
     <title>Dev Assistant</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <script>
-      // Apply the theme before first paint (no flash): saved choice, else the system preference.
+      // Apply the theme before first paint (no flash): saved choice, light by default.
       (function () {
         try {
           var saved = localStorage.getItem("theme");
-          var dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+          var dark = saved === "dark" || (saved === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
           document.documentElement.classList.toggle("dark", dark);
-        } catch (e) {
-          document.documentElement.classList.add("dark");
-        }
+        } catch (e) {}
       })();
     </script>
   </head>

@@ -23,7 +23,10 @@ export interface Project {
   chunks: number;
   files: number;
   model: string | null;
-  indexedAt?: number;
+  display_path?: string;
+  indexed_at?: number | null;
+  file_types?: Record<string, number>;
+  file_list?: string[];
 }
 
 export interface Source {
@@ -35,6 +38,7 @@ export interface Source {
   location?: string | null;
   score?: number | null;
   start_line?: number | null;
+  end_line?: number | null;
   language?: string | null;
   excerpt?: string | null;
   repo?: string | null;
@@ -117,6 +121,8 @@ export interface Message {
   startedAt: number;
   finishedAt?: number;
   repo?: string | null;
+  mode?: Mode;
+  sessionId?: string;
 }
 
 export interface Draft {
@@ -147,4 +153,60 @@ export interface SubmissionResult {
   message: string;
   similar_issues: SimilarIssue[];
   possible_matches: { number: number; title: string; html_url: string }[];
+}
+
+export interface RateLimit {
+  limit: number | null;
+  remaining: number | null;
+  used: number | null;
+  reset_at: string | null;
+  resource: string | null;
+  authenticated: boolean;
+}
+
+export interface GitHubStatus {
+  configured: boolean;
+  reachable: boolean;
+  authenticated: boolean;
+  repo: string | null;
+  message: string | null;
+  rate_limit: RateLimit | null;
+  repository?: { description: string; default_branch: string; stars: number; open_issues_count: number; html_url: string; visibility: string | null };
+}
+
+export interface ProjectInfo { path: string; name: string; display_path: string; git: { branch: string; detached: boolean } | null }
+
+export interface ProjectFile { path: string; file_type: string; size_bytes: number; indexed: boolean }
+export interface ProjectFiles {
+  project_name: string; total_files: number; truncated: boolean; skipped_by_reason: Record<string, number>;
+  file_types: Record<string, number>; files: ProjectFile[];
+}
+export interface FileView {
+  file_path: string; start_line: number; end_line: number; total_lines: number; truncated: boolean;
+  lines: string[]; language: string | null;
+}
+export interface SearchHit { file_path: string; score: number; start_line: number | null; end_line: number | null; excerpt: string; language: string | null }
+
+export interface IssueSummary {
+  number: number; title: string; state: string; is_pull_request: boolean; labels: string[]; author: string | null;
+  created_at: string; updated_at: string; comments: number; html_url: string; body_excerpt: string;
+}
+export interface IssueComment { position: number; author: string | null; author_association: string | null; created_at: string; body: string; html_url: string }
+export interface IssueDetail extends Omit<IssueSummary, "comments" | "body_excerpt"> {
+  repo: string; state_reason: string | null; closed_at: string | null; body: string; body_truncated: boolean;
+  comments_count: number; comments: IssueComment[]; omitted_comments: number; omitted_after_position: number | null;
+}
+export interface PullSummary {
+  number: number; title: string; state: string; draft: boolean; author: string | null; base_branch: string;
+  head_branch: string; created_at: string; updated_at: string; merged_at: string | null; html_url: string;
+}
+export interface PullDetail extends PullSummary {
+  repo: string; merged: boolean; closed_at: string | null; body: string; commits: number | null; additions: number | null;
+  deletions: number | null; changed_files: number | null; files_truncated: boolean;
+  files: { filename: string; status: string; additions: number; deletions: number; previous_filename: string | null }[];
+  closing_references: { keyword: string; repo: string; number: number }[];
+}
+export interface AuditEntry {
+  timestamp: string; action: string; repo: string; channel: string; draft_hash: string; title_length: number;
+  issue_number?: number | null; issue_url?: string | null; error_category?: string | null;
 }

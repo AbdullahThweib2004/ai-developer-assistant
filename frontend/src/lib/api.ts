@@ -1,4 +1,7 @@
-import type { ApiErrorInfo, Draft, Mode, Project, SimilarIssue, Status, SubmissionResult } from "./types";
+import type {
+  ApiErrorInfo, AuditEntry, Draft, FileView, GitHubStatus, IssueDetail, IssueSummary, Mode, Project, ProjectFiles,
+  ProjectInfo, PullDetail, PullSummary, RateLimit, SearchHit, SimilarIssue, Status, SubmissionResult,
+} from "./types";
 
 /** The per-launch session token: injected into the page by the server (or Vite env in dev). */
 export function sessionToken(): string {
@@ -68,6 +71,9 @@ export async function streamEvents(url: string, body: unknown, onEvent: SseHandl
   }
 }
 
+const qs = (params: Record<string, string | number | null | undefined>) =>
+  new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== "").map(([k, v]) => [k, String(v)])).toString();
+
 export const api = {
   status: () => request<Status>("GET", "/api/status"),
   projects: () => request<{ projects: Project[] }>("GET", "/api/projects"),
@@ -84,4 +90,21 @@ export const api = {
       draft_hash: draftHash, typed_repo_confirmation: typed, confirm_similar: confirmSimilar,
     }),
   cancelDraft: (id: string) => request<{ cancelled: boolean }>("POST", `/api/drafts/${id}/cancel`),
+
+  // read-only explore endpoints
+  projectInfo: (path: string) => request<ProjectInfo>("GET", `/api/project/info?${qs({ path })}`),
+  projectFiles: (path: string) => request<ProjectFiles>("GET", `/api/project/files?${qs({ path })}`),
+  projectFile: (path: string, file: string, start?: number) =>
+    request<FileView>("GET", `/api/project/file?${qs({ path, file, start })}`),
+  projectSearch: (path: string, q: string, topK = 6) =>
+    request<{ query: string; hits: SearchHit[] }>("GET", `/api/project/search?${qs({ path, q, top_k: topK })}`),
+  githubStatus: (repo: string | null) => request<GitHubStatus>("GET", `/api/github/status?${qs({ repo })}`),
+  issues: (repo: string | null, q = "", state = "all") =>
+    request<{ repo: string; query: string; total_count: number; items: IssueSummary[]; rate_limit: RateLimit | null }>(
+      "GET", `/api/github/issues?${qs({ repo, q, state })}`),
+  issue: (repo: string | null, number: number) => request<IssueDetail>("GET", `/api/github/issues/${number}?${qs({ repo })}`),
+  pulls: (repo: string | null, state = "open") =>
+    request<{ repo: string; items: PullSummary[]; rate_limit: RateLimit | null }>("GET", `/api/github/pulls?${qs({ repo, state })}`),
+  pull: (repo: string | null, number: number) => request<PullDetail>("GET", `/api/github/pulls/${number}?${qs({ repo })}`),
+  audit: () => request<{ entries: AuditEntry[]; error: string | null }>("GET", "/api/activity/audit"),
 };
