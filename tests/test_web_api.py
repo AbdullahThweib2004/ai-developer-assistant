@@ -76,6 +76,15 @@ class Harness:
             assert response.status_code == 200, response.read()
             return sse_events(response)
 
+    def conversation(self, project: Path, mode: str = "project", repo: str | None = None) -> dict:
+        response = self.post("/api/conversations", json={"path": str(project), "mode": mode, "repo": repo})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def investigate(self, conversation: dict, question: str, **extra: Any) -> list[tuple[str, Any]]:
+        return self.stream("/api/investigate", {"conversation_id": conversation["id"],
+                                                "path": conversation["project"], "question": question, **extra})
+
     def posts(self) -> list:
         return [r for r in self.github.requests if r.method == "POST"]
 
@@ -102,7 +111,7 @@ SEARCH = FakeToolCalls([("search_project", {"query": "verify user credentials pa
 
 def test_token_required_on_every_api_route(settings: Settings) -> None:
     h = Harness(settings)
-    for method, url in [("GET", "/api/status"), ("GET", "/api/projects"), ("POST", "/api/sessions")]:
+    for method, url in [("GET", "/api/status"), ("GET", "/api/projects"), ("POST", "/api/conversations")]:
         assert h.client.request(method, url).status_code == 401
         assert h.client.request(method, url, headers={"X-Session-Token": "wrong"}).status_code == 401
     assert h.get("/api/status").status_code == 200
@@ -118,7 +127,7 @@ def test_host_header_checked_against_dns_rebinding(settings: Settings, host: str
                                      {"Sec-Fetch-Site": "cross-site"}])
 def test_cross_origin_requests_refused(settings: Settings, headers: dict) -> None:
     h = Harness(settings)
-    assert h.post("/api/sessions", json={"path": str(settings.project_root)}, headers=headers).status_code == 403
+    assert h.post("/api/conversations", json={"path": str(settings.project_root)}, headers=headers).status_code == 403
     assert h.get("/api/status", headers=headers).status_code == 403
     assert "access-control-allow-origin" not in {k.lower() for k in h.get("/api/status").headers}
 
@@ -170,8 +179,8 @@ def test_paths_outside_allowed_roots_are_rejected_without_leaking(settings: Sett
     h = Harness(settings)
     outside = tmp_path / "private-outside-dir"
     outside.mkdir()
-    for url, body in [("/api/index", {"path": str(outside)}), ("/api/sessions", {"path": str(outside)}),
-                      ("/api/ask", {"path": str(outside), "question": "x"}),
+    for url, body in [("/api/index", {"path": str(outside)}), ("/api/conversations", {"path": str(outside)}),
+                      ("/api/ask", {"path": str(outside), "question": "x", "conversation_id": "c"}),
                       ("/api/index", {"path": f"{settings.project_root}/../private-outside-dir"})]:
         response = h.post(url, json=body)
         assert response.status_code == 403
@@ -203,14 +212,18 @@ def test_index_streams_progress(settings: Settings) -> None:
 
 def test_ask_streams_status_then_answer(indexed: Settings) -> None:
     h = Harness(indexed)
-    events = h.stream("/api/ask", {"path": str(indexed.project_root), "question": QUESTION})
+    conversation = h.conversation(indexed.project_root)
+    events = h.stream("/api/ask", {"path": str(indexed.project_root), "question": QUESTION,
+                                   "conversation_id": conversation["id"]})
     assert [n for n, _ in events] == ["status", "status", "answer"]
     answer = events[-1][1]
     assert answer["answer_markdown"] and answer["sources"] and "sections" in answer
 
 
 def test_ask_not_indexed_is_a_friendly_error_event(settings: Settings) -> None:
-    events = Harness(settings).stream("/api/ask", {"path": str(settings.project_root), "question": QUESTION})
+    h = Harness(settings)
+    events = h.stream("/api/ask", {"path": str(settings.project_root), "question": QUESTION,
+                                   "conversation_id": h.conversation(settings.project_root)["id"]})
     assert events[-1][0] == "error" and events[-1][1]["category"] == "not_indexed"
     assert "Index" in events[-1][1]["hint"]
 
@@ -218,25 +231,27 @@ def test_ask_not_indexed_is_a_friendly_error_event(settings: Settings) -> None:
 # ---- sessions / investigate --------------------------------------------------------------------------
 
 
-def test_session_lifecycle_and_validation(indexed: Settings) -> None:
-    h = Harness(indexed)
-    session = h.post("/api/sessions", json={"path": str(indexed.project_root), "mode": "project"}).json()
+def test_conversation_sessions_and_validation(indexed: Settings) -> None:
+    h = Harness(indexed, script=["Answer."])
+    conversation = h.conversation(indexed.project_root)
+    session_id = dict(h.investigate(conversation, "q"))["started"]["session_id"]
+    session = h.get(f"/api/sessions/{session_id}").json()
     assert session["mode"] == "project" and "search_project" in session["tools"]
     assert not any("github" in t for t in session["tools"])
-    assert h.get(f"/api/sessions/{session['id']}").json()["id"] == session["id"]
-    assert h.client.delete(f"/api/sessions/{session['id']}", headers=h.headers).json() == {"deleted": True}
-    assert h.get(f"/api/sessions/{session['id']}").status_code == 404
-    bad_repo = h.post("/api/sessions", json={"path": str(indexed.project_root), "repo": "evil/repo"})
+    bad_repo = h.post("/api/conversations", json={"path": str(indexed.project_root), "repo": "evil/repo"})
     assert bad_repo.status_code == 400
     no_repo = indexed.model_copy(update={"github_default_repo": None, "github_allowed_repos": ""})
-    assert Harness(no_repo).post("/api/sessions", json={"path": str(indexed.project_root),
-                                                        "mode": "github"}).status_code == 400
+    h2 = Harness(no_repo)
+    github_only = h2.conversation(indexed.project_root, mode="github")
+    response = h2.post("/api/investigate", json={"conversation_id": github_only["id"],
+                                                 "path": str(indexed.project_root), "question": "q"})
+    assert response.status_code == 400
 
 
 def test_investigate_event_order_schema_and_memory(indexed: Settings) -> None:
     h = Harness(indexed, script=[SEARCH, "It compares hashes [S1].", "Follow-up answer [S1]."])
-    session = h.post("/api/sessions", json={"path": str(indexed.project_root), "mode": "project"}).json()
-    events = h.stream("/api/investigate", {"session_id": session["id"], "question": QUESTION})
+    conversation = h.conversation(indexed.project_root)
+    events = h.investigate(conversation, QUESTION)
     names = [n for n, _ in events]
     assert names == ["started", "llm_call", "step_started", "step_finished", "llm_call", "answer", "done"]
     started = dict(events)["step_started"]
@@ -248,18 +263,20 @@ def test_investigate_event_order_schema_and_memory(indexed: Settings) -> None:
     assert answer["project_sources"][0]["start_line"] >= 1 and answer["invalid_citations"] == []
     assert all("compare_digest" not in json.dumps(e) for n, e in events if n in ("step_started", "step_finished"))
 
-    h.stream("/api/investigate", {"session_id": session["id"], "question": "And the follow-up?"})
+    h.investigate(conversation, "And the follow-up?")
     second_prompt = h.llm.chat_calls[-1].messages[0].content
     assert "previous_conversation" in second_prompt and QUESTION in second_prompt
-    assert h.get(f"/api/sessions/{session['id']}").json()["memory_turns"] == 2
+    assert h.get(f"/api/sessions/{answer['session_id']}").json()["memory_turns"] == 2
 
 
 def test_investigate_busy_session(indexed: Settings) -> None:
-    h = Harness(indexed, script=["done"])
-    session = h.post("/api/sessions", json={"path": str(indexed.project_root), "mode": "project"}).json()
-    web_session = h.client.app.state.sessions.get(session["id"])  # type: ignore[attr-defined]
+    h = Harness(indexed, script=["done", "again"])
+    conversation = h.conversation(indexed.project_root)
+    session_id = dict(h.investigate(conversation, "first"))["started"]["session_id"]
+    web_session = h.client.app.state.sessions.get(session_id)  # type: ignore[attr-defined]
     web_session.lock.acquire()
-    response = h.post("/api/investigate", json={"session_id": session["id"], "question": "q"})
+    response = h.post("/api/investigate", json={"conversation_id": conversation["id"],
+                                                "path": conversation["project"], "question": "q"})
     assert response.status_code == 409 and response.json()["detail"]["category"] == "busy"
 
 
@@ -267,9 +284,8 @@ def test_investigate_busy_session(indexed: Settings) -> None:
 
 
 def answered_session(h: Harness, project: Path) -> tuple[str, str]:
-    session = h.post("/api/sessions", json={"path": str(project), "mode": "project"}).json()
-    events = h.stream("/api/investigate", {"session_id": session["id"], "question": QUESTION})
-    return session["id"], dict(events)["done"]["turn_id"]
+    events = dict(h.investigate(h.conversation(project), QUESTION))
+    return events["answer"]["session_id"], events["done"]["turn_id"]
 
 
 def prepare(h: Harness, project: Path) -> dict:
@@ -379,8 +395,9 @@ def test_cancel_is_audited(indexed: Settings) -> None:
 
 
 def test_api_has_no_route_the_llm_could_use_to_approve(indexed: Settings) -> None:
-    h = Harness(indexed)
-    session = h.post("/api/sessions", json={"path": str(indexed.project_root)}).json()
+    h = Harness(indexed, script=["Answer."])
+    conversation = h.conversation(indexed.project_root, mode="auto", repo="octo-org/demo")
+    session = h.get(f"/api/sessions/{dict(h.investigate(conversation, 'q'))['started']['session_id']}").json()
     assert not any(word in t for t in session["tools"] for word in ("create", "approve", "submit"))
 
 
@@ -399,8 +416,9 @@ def test_demo_mode_runs_offline(monkeypatch: pytest.MonkeyPatch) -> None:
     demo = str(REPO_ROOT / "examples" / "fastapi-auth-demo")
     with client.stream("POST", "/api/index", json={"path": demo}, headers=headers) as r:
         assert sse_events(r)[-1][0] == "done"
-    session = client.post("/api/sessions", json={"path": demo, "repo": "fastapi/fastapi"}, headers=headers).json()
-    with client.stream("POST", "/api/investigate", json={"session_id": session["id"],
+    conversation = client.post("/api/conversations", json={"path": demo, "repo": "fastapi/fastapi"},
+                               headers=headers).json()
+    with client.stream("POST", "/api/investigate", json={"conversation_id": conversation["id"], "path": demo,
                        "question": "Why does /users/me return 401 even with a bearer token?"}, headers=headers) as r:
         answer = dict(sse_events(r))["answer"]
     assert [c["kind"] for c in answer["causes"]] == ["evidence", "evidence", "hypothesis"]

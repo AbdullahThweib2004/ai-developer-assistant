@@ -69,8 +69,7 @@ def test_line_info_never_reads_files_the_loader_refuses(settings: Settings) -> N
 
 def test_investigation_sources_carry_start_and_end_lines(indexed: Settings) -> None:
     h = harness(indexed, script=[SEARCH, "It hashes the password [S1]."])
-    session = h.post("/api/sessions", json={"path": str(indexed.project_root), "mode": "project"}).json()
-    events = h.stream("/api/investigate", {"session_id": session["id"], "question": QUESTION})
+    events = h.investigate(h.conversation(indexed.project_root), QUESTION)
     sources = next(d for n, d in events if n == "answer")["project_sources"]
     assert sources
     for src in sources:
@@ -85,7 +84,8 @@ def test_investigation_sources_carry_start_and_end_lines(indexed: Settings) -> N
 def test_quick_answer_sources_carry_line_ranges(indexed: Settings) -> None:
     h = harness(indexed)
     h.llm.script = ["It checks the hash [S1]."]
-    events = h.stream("/api/ask", {"path": str(indexed.project_root), "question": QUESTION})
+    events = h.stream("/api/ask", {"path": str(indexed.project_root), "question": QUESTION,
+                                   "conversation_id": h.conversation(indexed.project_root)["id"]})
     sources = events[-1][1]["sources"]
     assert sources and all(1 <= s["start_line"] <= s["end_line"] for s in sources)
 

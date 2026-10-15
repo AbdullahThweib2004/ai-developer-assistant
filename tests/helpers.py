@@ -15,6 +15,7 @@ FIXTURE_FILES = {
 
 def make_settings(root: Path, **overrides: object) -> Settings:
     """Settings for tests: ignore any real .env file in the working directory."""
+    overrides.setdefault("data_dir", root.parent / "web-data")  # conversation history stays in tmp
     return Settings(_env_file=None, project_root=root, **overrides)  # type: ignore[call-arg]
 
 
